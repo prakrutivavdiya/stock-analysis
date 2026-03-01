@@ -45,6 +45,7 @@ StockPilot is a multi-user web application that serves as an intelligent trading
 ### 4.1 In Scope
 - Multi-user authentication via Kite OAuth (each user logs in with their own Zerodha account)
 - Local session management with JWT (RS256)
+- Options / F&O trading
 - Portfolio dashboard with real-time and historical data
 - Historical OHLCV data fetching and local caching (SQLite/PostgreSQL)
 - Day-1 (previous trading day) data view as the default historical view
