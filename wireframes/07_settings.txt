@@ -1,0 +1,173 @@
+================================================================================
+  STOCKPILOT — PAGE 07: SETTINGS & USER PROFILE
+  Route: /settings
+================================================================================
+
+Two-panel layout: left navigation strip + right content panel.
+Three sub-sections: Profile · Preferences · Session.
+Default sub-section on open: Profile.
+
+================================================================================
+FULL PAGE LAYOUT
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  [≡]  StockPilot       ● MARKET OPEN  09:15 – 15:30 IST         [↺]  ABC123 ▾  │
+├──────┬───────────────────────────────────────────────────────────────────────────┤
+│      │                                                                            │
+│  [D] │  ⚙  Settings                                                               │
+│  [C] │  ─────────────────────────────────────────────────────────────────────── │
+│  [K] │                                                                            │
+│  [S] │  ┌──────────────────┐  ┌──────────────────────────────────────────────┐  │
+│  [B] │  │                  │  │                                                │  │
+│  [O] │  │  ● Profile       │  │  USER PROFILE                                 │  │
+│  [A] │  │                  │  │  ─────────────────────────────────────────── │  │
+│      │  │  ○ Preferences   │  │                                                │  │
+│      │  │                  │  │  ┌─────────────────────────────────────────┐  │  │
+│      │  │  ○ Session       │  │  │                                         │  │  │
+│      │  │                  │  │  │   ┌──────┐   Jane Doe                   │  │  │
+│      │  └──────────────────┘  │  │   │  JD  │   Kite User ID:  ABC123      │  │  │
+│      │    ● = active section  │  │   └──────┘   Email:          jane@ex.co │  │  │
+│      │                        │  │              Exchanges:  NSE · BSE       │  │  │
+│      │                        │  │              Products:   CNC · NRML · MIS│  │  │
+│      │                        │  │                                         │  │  │
+│      │                        │  └─────────────────────────────────────────┘  │  │
+│      │                        │                                                │  │
+│      │                        │  KITE SESSION                                  │  │
+│      │                        │  ─────────────────────────────────────────── │  │
+│      │                        │  Status :  ● Active                            │  │
+│      │                        │  Expires:  Today at 23:59 IST                  │  │
+│      │                        │                                                │  │
+│      │                        │  [ Re-authenticate with Kite ]                 │  │
+│      │                        │  // use when session shows "● Expired"         │  │
+│      │                        │                                                │  │
+│      │                        │  ─────────────────────────────────────────── │  │
+│      │                        │                                                │  │
+│      │                        │  [ ⏏  Logout from StockPilot ]                │  │
+│      │                        │                                                │  │
+│      │                        └────────────────────────────────────────────────┘  │
+│      │                                                                            │
+└──────┴───────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+SECTION: PREFERENCES  (right panel when "Preferences" is selected)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  PREFERENCES                                                              │
+  │  ─────────────────────────────────────────────────────────────────────  │
+  │                                                                           │
+  │  Appearance                                                               │
+  │  ─────────                                                                │
+  │  Theme                        [● Dark  ○ Light]                          │
+  │                                                                           │
+  │  Charts                                                                   │
+  │  ──────                                                                   │
+  │  Default interval             [ 15m ▾ ]   (5m / 15m / 30m / 1H / Day)  │
+  │  Default chart type           [ Candlestick ▾ ]                          │
+  │                                                                           │
+  │  Dashboard                                                                │
+  │  ─────────                                                                │
+  │  Holdings refresh interval    [ 60s ▾ ]   (30s / 60s / 90s / Off)       │
+  │  Positions refresh interval   [ 60s ▾ ]   (30s / 60s / 90s / Off)       │
+  │                                                                           │
+  │  Notifications                                                            │
+  │  ─────────────                                                            │
+  │  Show success order toast     [✓]  enabled                               │
+  │  Show error / rejected toast  [✓]  enabled                               │
+  │  Show Kite session warning    [✓]  enabled  (shown 30 min before expiry) │
+  │                                                                           │
+  │  ─────────────────────────────────────────────────────────────────────  │
+  │  [ Save Preferences ]                       [ Reset to Defaults ]        │
+  │                                                                           │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+  All preferences saved to localStorage — per-browser, no backend required.
+
+
+================================================================================
+SECTION: SESSION  (right panel when "Session" is selected)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  SESSION MANAGEMENT                                                       │
+  │  ─────────────────────────────────────────────────────────────────────  │
+  │                                                                           │
+  │  StockPilot Session                                                       │
+  │  ──────────────────                                                       │
+  │  JWT status       Active (expires in 6h 42m)                             │
+  │  Refresh token    Valid (expires in 29 days)                              │
+  │  Device           Chrome · macOS · Last activity: today 10:34 IST        │
+  │                                                                           │
+  │  [ Logout this device ]                                                   │
+  │                                                                           │
+  │  ─────────────────────────────────────────────────────────────────────  │
+  │                                                                           │
+  │  Kite Connect Session                                                     │
+  │  ────────────────────                                                     │
+  │  Kite access token    Active                                              │
+  │  Token expires        Daily at ~midnight IST (Kite resets every day)     │
+  │                                                                           │
+  │  ⚠  Kite tokens expire every day. If API calls start failing,             │
+  │     click below to re-authenticate and get a fresh token.                 │
+  │                                                                           │
+  │  [ Re-authenticate with Kite ]                                            │
+  │                                                                           │
+  │  ─────────────────────────────────────────────────────────────────────  │
+  │                                                                           │
+  │  Danger Zone                                                              │
+  │  ───────────                                                              │
+  │  Revoke all sessions   Logs you out of all devices and invalidates all    │
+  │                        refresh tokens for your account.                   │
+  │                                                                           │
+  │  [ Revoke All Sessions ]  ← destructive; confirmation dialog required     │
+  │                                                                           │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+KITE SESSION EXPIRED — PROFILE STATE
+================================================================================
+
+  When kite_access_token has expired (detected via 403 from Kite API):
+
+  ┌─────────────────────────────────────────┐
+  │   ○ Expired   re-authenticate ↗          │   ← Kite session status row
+  └─────────────────────────────────────────┘
+
+  Full banner also shown at top of every page (see 00_app_shell.txt):
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  ⚠  Your Kite session has expired — live data is unavailable.    │
+  │     [ Re-authenticate with Kite ]                   [✕ dismiss]  │
+  └──────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+DATA SOURCES FOR PROFILE FIELDS
+================================================================================
+
+  Field               Source
+  ──────────────────  ──────────────────────────────────────────────────────
+  Full name           GET /api/v1/auth/profile → users.kite_user_name
+  Kite user ID        GET /api/v1/auth/profile → users.kite_user_id
+  Email               Kite GET /user/profile → email (stored on first login)
+  Exchanges           Kite GET /user/profile → exchanges list
+  Products            Kite GET /user/profile → products list
+  Kite session status Backend: kite_token_expires_at vs current time (IST)
+  JWT status          Frontend: decode JWT exp claim from httpOnly cookie
+                      (backend /auth/me endpoint returns expiry info)
+
+  Profile data is fetched once on Settings page open via GET /api/v1/auth/profile.
+  No sensitive tokens are exposed to the frontend.
+
+
+================================================================================
+SETTINGS ICON IN SIDEBAR (reference — from 00_app_shell.txt)
+================================================================================
+
+  Collapsed sidebar:   [⚙]   (gear icon, links to /settings)
+  Expanded sidebar:    ⚙  Settings
+
+  Settings is always at the bottom of the sidebar navigation, above Logout.
+  Navigating to /settings highlights the sidebar gear icon with active state.

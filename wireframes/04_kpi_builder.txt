@@ -1,0 +1,146 @@
+================================================================================
+  STOCKPILOT — PAGE 04: KPI BUILDER
+  Route: /kpis
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────────────┐
+│  [≡]  StockPilot       ● MARKET OPEN  09:15 – 15:30 IST          [ ↺ ]  BBQ846  │
+├──────┬─────────────────────────────────────────────────────────────────────────────┤
+│      │                                                                             │
+│  [D] │  KPI LIBRARY                                        [ + New KPI ]          │
+│  [C] │  ─────────────────────────────────────────────────────────────────────────│
+│  [K] │                                                                             │
+│  [S] │  Your KPIs (6 active)                                                      │
+│  [B] │                                                                             │
+│  [O] │  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  [A] │  │  Name                │ Formula          │ Type        │ Active │       │ │
+│      │  ├──────────────────────┼──────────────────┼─────────────┼────────┼───────┤ │
+│      │  │  Daily RSI           │ RSI(close, 14)   │ SCALAR      │  ✓    │ [Edit]│ │
+│      │  │                      │                  │             │        │ [Del] │ │
+│      │  ├──────────────────────┼──────────────────┼─────────────┼────────┼───────┤ │
+│      │  │  RSI Overbought      │ RSI(close,14)>70 │ BOOLEAN     │  ✓    │ [Edit]│ │
+│      │  │                      │                  │             │        │ [Del] │ │
+│      │  ├──────────────────────┼──────────────────┼─────────────┼────────┼───────┤ │
+│      │  │  BB Position         │ BB_SIGNAL(20,2)  │ CATEGORICAL │  ✓    │ [Edit]│ │
+│      │  │                      │                  │             │        │ [Del] │ │
+│      │  ├──────────────────────┼──────────────────┼─────────────┼────────┼───────┤ │
+│      │  │  P/E Ratio           │ FUNDAMENTAL(pe)  │ SCALAR      │  ✓    │ [Edit]│ │
+│      │  │                      │                  │             │        │ [Del] │ │
+│      │  ├──────────────────────┼──────────────────┼─────────────┼────────┼───────┤ │
+│      │  │  % from 52W High     │ PCT_FROM_52W_HIGH│ SCALAR      │  ✓    │ [Edit]│ │
+│      │  │                      │                  │             │        │ [Del] │ │
+│      │  ├──────────────────────┼──────────────────┼─────────────┼────────┼───────┤ │
+│      │  │  EPS                 │ FUNDAMENTAL(eps) │ SCALAR      │  ✓    │ [Edit]│ │
+│      │  │                      │                  │             │        │ [Del] │ │
+│      │  └──────────────────────┴──────────────────┴─────────────┴────────┴───────┘ │
+│      │                                                                             │
+│      │  // Active KPIs appear as optional columns in the Dashboard holdings table │
+│      │  // Inactive KPIs are skipped during computation                           │
+│      │                                                                             │
+└──────┴─────────────────────────────────────────────────────────────────────────────┘
+
+
+KPI EDITOR PANEL  ([ + New KPI ] or [Edit] → opens side panel / modal):
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │  KPI EDITOR — New KPI                                              [✕ Close] │
+  │  ──────────────────────────────────────────────────────────────────────────  │
+  │                                                                              │
+  │  Name                                                                        │
+  │  ┌──────────────────────────────────────┐                                   │
+  │  │  Daily RSI                           │                                   │
+  │  └──────────────────────────────────────┘                                   │
+  │                                                                              │
+  │  Description (optional)                                                      │
+  │  ┌──────────────────────────────────────┐                                   │
+  │  │  14-period RSI on daily closes       │                                   │
+  │  └──────────────────────────────────────┘                                   │
+  │                                                                              │
+  │  Return Type                                                                 │
+  │  ◉ SCALAR       ○ BOOLEAN       ○ CATEGORICAL                               │
+  │  (plain number)   (true/false)    (labelled category)                       │
+  │                                                                              │
+  │  Formula                                                                     │
+  │  ┌──────────────────────────────────────────────────────────────────────┐   │
+  │  │                                                                        │   │
+  │  │  RSI(close, 14)                                                       │   │
+  │  │                                                                        │   │
+  │  │                                                                        │   │
+  │  └──────────────────────────────────────────────────────────────────────┘   │
+  │                                                                              │
+  │  ─── Formula Reference ────────────────────────────────────────────────     │
+  │                                                                              │
+  │  Technical Indicators (from pandas-ta):                                     │
+  │    RSI(src, period)         — Relative Strength Index                       │
+  │    EMA(src, period)         — Exponential Moving Average                    │
+  │    SMA(src, period)         — Simple Moving Average                         │
+  │    MACD(src, fast, slow, sig) — returns histogram value                     │
+  │    BB_UPPER/BB_LOWER/BB_MID(src, period, std)                               │
+  │    ATR(period)                                                               │
+  │    STOCH_K / STOCH_D(k, d, smooth)                                          │
+  │    ADX(period)                                                               │
+  │    OBV()                                                                     │
+  │    VWAP()                       — intraday only                             │
+  │                                                                              │
+  │  Sources (price series):                                                     │
+  │    close    open    high    low    volume                                    │
+  │                                                                              │
+  │  Fundamental (SCALAR only):                                                  │
+  │    FUNDAMENTAL(pe)   FUNDAMENTAL(eps)   FUNDAMENTAL(book_value)             │
+  │    FUNDAMENTAL(week_52_high)  FUNDAMENTAL(week_52_low)                      │
+  │    PCT_FROM_52W_HIGH                                                         │
+  │                                                                              │
+  │  Operators: + - * /  >  <  >=  <=  ==  !=  AND  OR  NOT                    │
+  │  Constants: any numeric literal                                              │
+  │                                                                              │
+  │  Return type rules:                                                          │
+  │    SCALAR     → numeric expression (e.g. RSI(close,14))                     │
+  │    BOOLEAN    → comparison / logical (e.g. RSI(close,14) > 70)              │
+  │    CATEGORICAL→ use IF() — IF(cond, "label_true", "label_false")            │
+  │               — for 3-way: IF(c1, "BUY", IF(c2, "SELL", "HOLD"))           │
+  │                                                                              │
+  │  ─── Live Preview ──────────────────────────────────────────────────────    │
+  │                                                                              │
+  │  Test on:  [ INFY  ▾ ]   Interval: [ day ▾ ]                               │
+  │                                                                              │
+  │  Result:   52.1   (SCALAR)         ✓ Formula valid                          │
+  │                                                                              │
+  │  ─────────────────────────────────────────────────────────────────────────  │
+  │                                                                              │
+  │  [ Cancel ]                              [ Test Formula ]  [ Save KPI ]     │
+  └──────────────────────────────────────────────────────────────────────────────┘
+
+
+VALIDATION STATES:
+  ── Valid formula ──
+  │  RSI(close, 14)             ✓ Formula valid       Result: 52.1 (SCALAR)
+
+  ── Syntax error ──
+  │  RSI(close 14)              ✕ Parse error: expected ',' at position 10
+
+  ── Type mismatch ──
+  │  RSI(close, 14) > 70        ✕ Return type mismatch: formula returns BOOLEAN
+  │                               but SCALAR selected. Switch to BOOLEAN?
+  │                               [Switch to BOOLEAN]
+
+  ── Fundamental not available ──
+  │  FUNDAMENTAL(pe)            ⚠ P/E data unavailable for this instrument.
+  │                               Column will show N/A.
+
+
+CATEGORICAL EXAMPLE:
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  Formula:                                                                  │
+  │  IF(close > BB_UPPER(close,20,2), "SELL SIGNAL",                         │
+  │     IF(close < BB_LOWER(close,20,2), "BUY SIGNAL", "HOLD"))              │
+  │                                                                            │
+  │  Return Type: CATEGORICAL                                                  │
+  │  Result on INFY: "HOLD"                                                   │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+  In Dashboard table:
+  │  BB Position  │
+  │  [BUY SIGNAL] │  ← green badge
+  │  [HOLD]       │  ← grey badge
+  │  [SELL SIGNAL]│  ← red badge

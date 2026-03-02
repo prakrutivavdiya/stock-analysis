@@ -1,0 +1,116 @@
+================================================================================
+  STOCKPILOT — APP SHELL (Global Layout)
+  Applies to all pages except Login
+================================================================================
+
+ Width reference: 1280px+   Sidebar: 56px collapsed / 200px expanded
+ Color theme: Dark (default)
+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  TOPBAR                                                                          │
+│  StockPilot          [●] MARKET OPEN  09:15 – 15:30 IST    INFY ▲1290 +1.08%   │
+│                       ↑ green dot = open, red = closed                  BBQ846  │
+└────┬─────────────────────────────────────────────────────────────────────────────┘
+     │
+┌────┴──────┐
+│  SIDEBAR  │   (collapsed by default; hover to expand, pin to keep open)
+│           │
+│  [≡]      │   ← hamburger / expand toggle
+│           │
+│  [  ]     │   Dashboard      (icon: grid)
+│           │
+│  [  ]     │   Charts         (icon: candlestick)
+│           │
+│  [  ]     │   KPIs           (icon: gauge)
+│           │
+│  [  ]     │   Orders         (icon: receipt)
+│           │
+│  [  ]     │   Audit Log      (icon: clipboard)
+│           │
+│           │
+│  ────────  │
+│  [  ]     │   Settings       (icon: gear)
+│  [  ]     │   Logout         (icon: exit arrow)
+└───────────┘
+
+
+EXPANDED SIDEBAR (pinned):
+┌────────────────┐
+│  ≡ StockPilot  │
+│                │
+│  ▣  Dashboard  │  ← active page shown with left accent bar + highlight
+│                │
+│  ⬛  Charts     │
+│                │
+│  ◉  KPIs       │
+│                │
+│  ▤  Orders     │
+│                │
+│  ☰  Audit Log  │
+│                │
+│  ─────────────  │
+│  ⚙  Settings   │
+│  ⏏  Logout     │
+└────────────────┘
+
+
+TOPBAR — DETAIL:
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  [≡] StockPilot        ● MARKET OPEN  09:15 – 15:30 IST                         │
+│                                                                                  │
+│  Watchlist ticker (scrolling): INFY +1.1%  HDFCBANK -0.4%  ITC +0.2%  LT +0.9%│
+│                                                                                  │
+│                                                         [ ↺ Refresh ]  ABC123 ▾ │
+└──────────────────────────────────────────────────────────────────────────────────┘
+  // Refresh button manually refreshes live data on the current page
+  // ABC123 = Kite user ID; clicking opens USER DROPDOWN (see below)
+  // Ticker only shown on Dashboard and Chart pages
+
+
+USER DROPDOWN (opens on clicking "ABC123 ▾" in topbar):
+┌─────────────────────────────────────────────────┐
+│  ┌───────┐  Jane Doe                             │
+│  │  JD   │  ABC123  ·  jane@example.com          │
+│  └───────┘  ● Kite session active                │
+│             Expires today at 23:59 IST           │
+│  ──────────────────────────────────────────────  │
+│  ⚙  Settings & Preferences                       │  ← links to /settings
+│  ──────────────────────────────────────────────  │
+│  ⏏  Logout                                       │  ← revokes session
+└─────────────────────────────────────────────────┘
+
+  // "● Kite session active" shown in green; "○ Kite session expired" in red
+  // When session is expired, dropdown shows: [ Re-authenticate with Kite ]
+  // JD = user initials; rendered as a coloured avatar circle
+
+
+KITE SESSION EXPIRED BANNER (shown below topbar on all pages when Kite token is stale):
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  ⚠  Your Kite session has expired — live data is unavailable.                    │
+│     [ Re-authenticate with Kite ]                                [✕ dismiss]     │
+└──────────────────────────────────────────────────────────────────────────────────┘
+  // Banner is sticky below topbar; dismissible but re-appears on next page load
+  // Re-authenticate redirects to Kite OAuth flow (/api/v1/auth/login)
+
+
+NOTIFICATION / TOAST:
+  ┌─────────────────────────────────────────┐
+  │  ✓  Order placed — INFY BUY 5 @ LIMIT  │  ← slides in top-right, auto-dismiss 4s
+  └─────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────┐
+  │  ✕  Kite rejected order: Insufficient  │  ← red, stays until dismissed
+  │     funds                         [✕]  │
+  └─────────────────────────────────────────┘
+
+
+PAGE CONTENT AREA:
+  Fills remaining width after sidebar.
+  Each page has its own layout — see individual wireframes.
+  Max content width: 1600px (centered on very wide screens).
+
+
+RESPONSIVE NOTES:
+  - Sidebar always collapsed on screen < 1024px
+  - Tables scroll horizontally on narrow viewport
+  - Charts minimum width: 640px

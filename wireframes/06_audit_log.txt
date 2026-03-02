@@ -1,0 +1,128 @@
+================================================================================
+  STOCKPILOT — PAGE 08: AUDIT LOG
+  Route: /audit
+================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────────────┐
+│  [≡]  StockPilot       ● MARKET OPEN  09:15 – 15:30 IST          [ ↺ ]  BBQ846  │
+├──────┬─────────────────────────────────────────────────────────────────────────────┤
+│      │                                                                             │
+│  [D] │  AUDIT LOG                                                                  │
+│  [C] │  ─────────────────────────────────────────────────────────────────────────  │
+│  [K] │                                                                             │
+│  [S] │  ┌─── FILTERS ─────────────────────────────────────────────────────────┐    │
+│  [B] │  │                                                                     │    │
+│  [O] │  │  Date Range   From [ 2026-02-01 ]   To [ 2026-02-28 ]               │    |
+│  [A] │  │                                                                     │    │
+│      │  │  Action Type  [ All Types              ▾ ]                          │    │
+│      │  │               options: All / ORDER_PLACE / ORDER_MODIFY /           │    │
+│      │  │                        ORDER_CANCEL / GTT_PLACE / GTT_MODIFY /      │    │
+│      │  │                        GTT_DELETE                                   │    │
+│      │  │                                                                     │    │
+│      │  │  Symbol       [ 🔍 filter by symbol...  ]                           │    │
+│      │  │                                                                     │    │
+│      │  │  Outcome      ◉ All   ○ SUCCESS only   ○ FAILURE only               │    │
+│      │  │                                                                     │    │
+│      │  │                                            [ Apply ]  [ Clear ]     │    │
+│      │  └─────────────────────────────────────────────────────────────────────┘    │
+│      │                                                                             │
+│      │  Showing 24 entries  [ Export CSV ]                                         │
+│      │                                                                             │
+│      │  ┌─────────────────────┬────────────────┬──────┬──────┬────────┬────────┐   │
+│      │  │  Timestamp          │ Action         │Sym.  │Exch. │Outcome │        │   │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤   │
+│      │  │ 2026-02-28 11:47:22 │ ORDER_PLACE    │ ITC  │ NSE  │ ✓ OK   │[Detail]│   │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤   │
+│      │  │ 2026-02-28 11:45:03 │ ORDER_PLACE    │ INFY │ NSE  │ ✕ FAIL │[Detail]│   │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤   │
+│      │  │ 2026-02-27 15:08:41 │ GTT_PLACE      │ABSL. │ NSE  │ ✓ OK   │[Detail]│   │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤ │
+│      │  │ 2026-02-27 14:52:19 │ ORDER_MODIFY   │HDFC. │ NSE  │ ✓ OK   │[Detail]│ │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤ │
+│      │  │ 2026-02-26 10:31:55 │ ORDER_CANCEL   │HDFC. │ NSE  │ ✓ OK   │[Detail]│ │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤ │
+│      │  │ 2026-02-25 09:48:10 │ GTT_DELETE     │ASTRL │ NSE  │ ✓ OK   │[Detail]│ │
+│      │  ├─────────────────────┼────────────────┼──────┼──────┼────────┼────────┤ │
+│      │  │  ... 18 more rows ...                                                 │ │
+│      │  └─────────────────────┴────────────────┴──────┴──────┴────────┴────────┘ │
+│      │                                                                             │
+│      │  < Prev   Page 1 of 2   Next >                                            │
+│      │                                                                             │
+└──────┴─────────────────────────────────────────────────────────────────────────────┘
+
+
+DETAIL PANEL  ([Detail] click → expands inline or side panel):
+  ┌───────────────────────────────────────────────────────────────────────────────┐
+  │  AUDIT ENTRY — 2026-02-28 11:47:22 IST                                       │
+  │  ─────────────────────────────────────────────────────────────────────────    │
+  │                                                                               │
+  │  Action           ORDER_PLACE                                                 │
+  │  Symbol           ITC  (NSE)                                                  │
+  │  Outcome          ✓  SUCCESS                                                  │
+  │  Kite Order ID    123456789                                                   │
+  │  Request ID       req_8f3a1c9d                                                │
+  │                                                                               │
+  │  Order Parameters                                                             │
+  │  ┌─────────────────────────────────────────────────────────────────────┐     │
+  │  │  {                                                                    │     │
+  │  │    "tradingsymbol": "ITC",                                           │     │
+  │  │    "exchange": "NSE",                                                │     │
+  │  │    "transaction_type": "SELL",                                       │     │
+  │  │    "quantity": 50,                                                   │     │
+  │  │    "order_type": "MARKET",                                           │     │
+  │  │    "product": "CNC",                                                 │     │
+  │  │    "validity": "DAY"                                                 │     │
+  │  │  }                                                                    │     │
+  │  └─────────────────────────────────────────────────────────────────────┘     │
+  │                                                                               │
+  │  Error Message    —                                                           │
+  │                                                                               │
+  └───────────────────────────────────────────────────────────────────────────────┘
+
+
+DETAIL — FAILURE EXAMPLE:
+  ┌───────────────────────────────────────────────────────────────────────────────┐
+  │  AUDIT ENTRY — 2026-02-28 11:45:03 IST                                       │
+  │  ─────────────────────────────────────────────────────────────────────────    │
+  │                                                                               │
+  │  Action           ORDER_PLACE                                                 │
+  │  Symbol           INFY  (NSE)                                                 │
+  │  Outcome          ✕  FAILURE                                                  │
+  │  Kite Order ID    —                                                           │
+  │  Request ID       req_4b2e8a1f                                                │
+  │                                                                               │
+  │  Order Parameters                                                             │
+  │  ┌─────────────────────────────────────────────────────────────────────┐     │
+  │  │  {                                                                    │     │
+  │  │    "tradingsymbol": "INFY",                                          │     │
+  │  │    "exchange": "NSE",                                                │     │
+  │  │    "transaction_type": "BUY",                                        │     │
+  │  │    "quantity": 10,                                                   │     │
+  │  │    "order_type": "LIMIT",                                            │     │
+  │  │    "price": 1290.00,                                                 │     │
+  │  │    "product": "CNC",                                                 │     │
+  │  │    "validity": "DAY"                                                 │     │
+  │  │  }                                                                    │     │
+  │  └─────────────────────────────────────────────────────────────────────┘     │
+  │                                                                               │
+  │  Error Message    Insufficient funds                                          │
+  │                                                                               │
+  └───────────────────────────────────────────────────────────────────────────────┘
+
+
+EMPTY STATE (no entries in date range):
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                           │
+  │   ☰  No audit entries found for the selected filters.                    │
+  │      Try expanding the date range or clearing filters.                   │
+  │                                                                           │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+
+NOTES:
+  // Audit log is append-only — no DELETE or UPDATE operations ever
+  // All order actions (place / modify / cancel) are logged, success or failure
+  // GTT actions (place / modify / delete) are also logged
+  // order_params stored as JSONB in DB; displayed as formatted JSON here
+  // request_id allows correlation with backend logs for debugging
+  // Export CSV downloads the current filtered view as a file

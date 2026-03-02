@@ -1,0 +1,86 @@
+================================================================================
+  STOCKPILOT — PAGE 01: LOGIN
+  Route: /login
+================================================================================
+
+Full-screen centered layout. No sidebar. No topbar.
+
+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                                                                                  │
+│                              ┌────────────────────┐                              │
+│                              │                    │                              │
+│                              │    StockPilot      │                              │
+│                              │  ─────────────     │                              │
+│                              │  Personal Trading  │                              │
+│                              │  & Analysis        │                              │
+│                              │                    │                              │
+│                              │  ╔══════════════╗  │                              │
+│                              │  ║ Login with   ║  │  ← primary CTA               │
+│                              │  ║   Kite       ║  │    Zerodha orange (#FF6600)  │
+│                              │  ╚══════════════╝  │                              │
+│                              │                    │                              │
+│                              │  You will be       │                              │
+│                              │  redirected to     │                              │
+│                              │  Zerodha's secure  │                              │
+│                              │  login page.       │                              │
+│                              │                    │                              │
+│                              └────────────────────┘                              │
+│                                                                                  │
+│                                                                                  │
+│                         Self-hosted · Secure · Personal                          │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+
+FLOW — HAPPY PATH:
+  1. User lands on /login
+  2. Clicks "Login with Kite"
+  3. Browser redirects to Zerodha OAuth page
+  4. User enters Zerodha credentials + TOTP on Zerodha
+  5. Zerodha redirects to /auth/callback?request_token=...
+  6. Backend exchanges token, issues JWT cookie
+  7. Browser redirects to /dashboard
+
+
+ERROR STATES:
+
+  -- OAuth cancelled / failed --
+  ┌────────────────────────────────────────────┐
+  │  StockPilot                                │
+  │  ─────────────                             │
+  │                                            │
+  │  ┌────────────────────────────────────┐    │
+  │  │  ✕  Login failed or was cancelled. │    │
+  │  │     Please try again.              │    │
+  │  └────────────────────────────────────┘    │
+  │                                            │
+  │  ╔══════════════╗                          │
+  │  ║ Login with   ║                          │
+  │  ║   Kite       ║                          │
+  │  ╚══════════════╝                          │
+  └────────────────────────────────────────────┘
+
+  -- Wrong Zerodha account (not BBQ846) --
+  ┌────────────────────────────────────────────┐
+  │  ┌────────────────────────────────────┐    │
+  │  │  ✕  Access denied.                 │    │
+  │  │     This app is private.           │    │
+  │  └────────────────────────────────────┘    │
+  └────────────────────────────────────────────┘
+
+
+SESSION EXPIRED STATE (redirected from any protected route):
+  ┌────────────────────────────────────────────┐
+  │  ┌────────────────────────────────────┐    │
+  │  │  ⚠  Your session has expired.      │    │
+  │  │     Please log in again.           │    │
+  │  └────────────────────────────────────┘    │
+  │  ╔══════════════╗                          │
+  │  ║ Login with   ║                          │
+  │  ║   Kite       ║                          │
+  │  ╚══════════════╝                          │
+  └────────────────────────────────────────────┘

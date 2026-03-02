@@ -1,0 +1,264 @@
+================================================================================
+  STOCKPILOT — PAGE 03: CHART VIEW
+  Route: /charts  (or /charts/:symbol)
+  Chart engine: TradingView Charting Library (primary)
+                TradingView Lightweight Charts (fallback — see NOTE below)
+================================================================================
+
+NOTE ON CHART ENGINE
+─────────────────────────────────────────────────────────────────────────────
+Primary: TradingView Charting Library (https://tradingview.com/charting-library)
+  - Free for non-commercial / personal use (apply for access at tradingview.com)
+  - Access granted to private GitHub repo: tradingview/charting_library
+  - Requires a JavaScript DataFeed adapter (IBasicDataFeed) that calls our
+    backend /historical and /instruments endpoints to supply OHLCV data
+  - ALL indicators (100+), drawing tools (50+), sub-panes are BUILT IN to TV
+  - Drawings are persisted to our backend via TV's saveChartToServer /
+    loadChartFromServer callbacks, which call our /charts/{token}/drawings API
+  - Chart state (zoom, indicators, layout) saved via TV's own save mechanism
+
+Fallback: TradingView Lightweight Charts (open source, MIT licence)
+  - No access approval needed; install via npm
+  - Simpler UI; indicators computed by backend and overlaid as series
+  - Drawing tools implemented manually; fewer built-in options
+  - Use this only if Charting Library access is not granted
+─────────────────────────────────────────────────────────────────────────────
+
+
+FULL PAGE LAYOUT (TradingView Charting Library):
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  [≡]  StockPilot       ● MARKET OPEN  09:15 – 15:30 IST         [↺]  ABC123     │
+├──────┬───────────────────────────────────────────────────────────────────────────┤
+│      │                                                                            │
+│  [D] │  ╔══════════════════════════════════════════════════════════════════════╗  │
+│  [C] │  ║         TradingView Charting Library — Full Embed                   ║  │
+│  [K] │  ║  ┌── TV Top Toolbar (built-in) ─────────────────────────────────┐  ║  │
+│  [S] │  ║  │ [🔍 INFY, NSE ▾] │ 1  5  15  30  1H  4H  D  W  M  │ [≡▾]  │  ║  │
+│  [B] │  ║  │                  ← intervals →         chart type ↗  │        │  ║  │
+│  [O] │  ║  │ [📊 Indicators+]  [⟳ Replay]  [Template▾]  [⚙]  [📸]        │  ║  │
+│  [A] │  ║  └──────────────────────────────────────────────────────────────┘  ║  │
+│      │  ║                                                                      ║  │
+│      │  ║  ┌──────┐  ┌─── Price Chart Area (TV managed) ──────────────────┐  ║  │
+│      │  ║  │  TV  │  │                                                      │  ║  │
+│      │  ║  │ Draw │  │  1350 ─┤           ╭─╮                              │  ║  │
+│      │  ║  │  bar │  │        │      ╭╮   │ │   ╭─╮                        │  ║  │
+│      │  ║  │      │  │  1320 ─┤ ╭╮  ╭╯╰╮  │╰╮  ╭╯╰─╮                     │  ║  │
+│      │  ║  │  [↖] │  │        │ ││  │   │ │  │ │     │                     │  ║  │
+│      │  ║  │  [↗] │  │  1290 ─┤─╯╰──╯   ╰─╯  ╰─╯    ╰──▌                 │  ║  │
+│      │  ║  │  [↔] │  │         ← indicators overlaid on price by TV →      │  ║  │
+│      │  ║  │  [↕] │  │                                                      │  ║  │
+│      │  ║  │  [⬛] │  │  ── VOLUME (TV pane) ──────────────────────────── │  ║  │
+│      │  ║  │  [◎] │  │  ▐▌ ▐▌  ▐▌▐▌  ▐▌  ▐▐▌  ▐▌  ▐▌▐▌                  │  ║  │
+│      │  ║  │  [✎] │  └──────────────────────────────────────────────────────┘  ║  │
+│      │  ║  │  [📐] │                                                             ║  │
+│      │  ║  │  [🔮] │  ┌─── RSI(14) sub-pane (TV managed) ───────────────────┐  ║  │
+│      │  ║  │       │  │  70 ─┤─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ (overbought)          │  ║  │
+│      │  ║  │  ─── │  │      │        ╭─╮    ╭─╮                              │  ║  │
+│      │  ║  │  [🔍] │  │  50 ─┤ ───────╯ ╰────╯ ╰──────────────────          │  ║  │
+│      │  ║  │  [🔒] │  │  30 ─┤─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ (oversold)            │  ║  │
+│      │  ║  └──────┘  └──────────────────────────────────────────────────────┘  ║  │
+│      │  ║                                                                      ║  │
+│      │  ║              ┌─── MACD sub-pane (TV managed) ─────────────────────┐  ║  │
+│      │  ║              │      ╭╮  ╭╮  ╭╮                                     │  ║  │
+│      │  ║              │  0 ─┤╯╰──╯╰──╯╰───────────────────────────────    │  ║  │
+│      │  ║              │     histogram (green/red bars) + signal line        │  ║  │
+│      │  ║              └──────────────────────────────────────────────────── ┘  ║  │
+│      │  ║                                                                      ║  │
+│      │  ╚══════════════════════════════════════════════════════════════════════╝  │
+│      │                                                                            │
+└──────┴───────────────────────────────────────────────────────────────────────────┘
+
+
+KEY: ╔══╗ = TradingView Charting Library embed boundary
+     Everything inside is rendered and managed by the TV library
+     Everything outside is StockPilot's React shell (sidebar, topbar)
+
+
+================================================================================
+TV DRAWING TOOLBAR (left side — built into TradingView Charting Library)
+================================================================================
+
+ [↖]  Cursor / selection tool
+ [↗]  Trend line                   click-drag to draw
+ [↔]  Horizontal ray / line        click to set price level
+ [↕]  Vertical line                click to set time position
+ [⬛]  Rectangle                    drag to define box
+ [◎]  Fibonacci retracement        drag to define range
+ [✎]  Text / Callout annotation    click to place text label
+ [📐]  Parallel channel             3-click definition
+ [🔮]  Pitchfork                    3-point tool
+ [───] Separator
+ [🔍]  Magnet mode toggle           snap drawings to OHLC values
+ [🔒]  Lock drawings toggle         prevents accidental moves
+ [🗑]  Remove all drawings          (with confirmation)
+
+All drawing objects are synced to the backend via TV's chart save/load hooks:
+  → Save:  TV calls saveChartToServer() → POST /charts/{token}/drawings
+  → Load:  TV calls loadChartFromServer() → GET /charts/{token}/drawings?interval=
+
+
+================================================================================
+TV TOP TOOLBAR (built into TradingView Charting Library)
+================================================================================
+
+ [🔍 INFY, NSE ▾]     Symbol search (TV built-in, backed by /instruments/search)
+ [1  5  15  30  1H  4H  D  W  M]   Interval selector (TV built-in)
+ [≡▾]                 Chart type: Candlestick / Bar / Line / Area / Heikin Ashi
+ [📊 Indicators+]     Opens TV indicator search dialog (100+ built-in indicators)
+ [⟳ Replay]           Bar replay mode (TV built-in, replays from ohlcv_cache)
+ [Template▾]          Save/load indicator + layout templates (TV built-in)
+ [⚙]                  Chart settings (colours, grid, timezone, etc.)
+ [📸]                 Snapshot / screenshot of chart
+
+
+================================================================================
+TV INDICATOR SEARCH DIALOG (opens on [📊 Indicators+] click — TV built-in)
+================================================================================
+
+┌─────────────────────────────────────────────────────────┐
+│  📊 Indicators                               [✕ close]  │
+│  ─────────────────────────────────────────────────────  │
+│  🔍  Search...                                          │
+│                                                          │
+│  ▶ Favourites  (pinned by user)                         │
+│  ▶ My Scripts  (Pine Script — TV built-in)              │
+│                                                          │
+│  Built-in Indicators (all computed client-side by TV)   │
+│  ─ Trend & Moving Averages                              │
+│      EMA · SMA · WMA · DEMA · TEMA · HMA               │
+│      VWAP · Ichimoku · Parabolic SAR · Supertrend       │
+│  ─ Momentum                                             │
+│      RSI · MACD · Stochastic · CCI · Williams %R        │
+│      ADX · Aroon · Momentum · ROC                       │
+│  ─ Volatility                                           │
+│      Bollinger Bands · ATR · Keltner · Donchian         │
+│      Historical Volatility                              │
+│  ─ Volume                                               │
+│      Volume · OBV · MFI · CMF · VWAP                   │
+│  … and 80+ more                                         │
+│                                                          │
+│  NOTE: All indicators here are computed by TradingView  │
+│  client-side from OHLCV data. No backend compute call.  │
+│  Backend indicator compute (pandas-ta) is used only     │
+│  for the KPI Builder portfolio calculations.            │
+└─────────────────────────────────────────────────────────┘
+
+
+================================================================================
+CROSSHAIR + HOVER TOOLTIP (TV built-in)
+================================================================================
+
+  Thin crosshair (vertical + horizontal) follows cursor across chart and sub-panes.
+  TV displays a floating legend at top of each pane:
+
+  Price pane top legend:
+  ┌────────────────────────────────────────────────────────────────┐
+  │  INFY,NSE  D  O:1301.20  H:1308.50  L:1298.70  C:1305.00 V:1.4M │
+  │  EMA 20: 1299.4    EMA 50: 1310.2    BB(20): 1264 / 1287 / 1310  │
+  └────────────────────────────────────────────────────────────────┘
+
+  RSI pane legend:   RSI(14): 48.2
+  MACD pane legend:  MACD: 5.2  Signal: 4.8  Hist: 0.4
+
+
+================================================================================
+RIGHT-CLICK CONTEXT MENU (on chart — TV built-in + custom extensions)
+================================================================================
+
+┌──────────────────────────────────────────┐
+│  Add indicator here                      │  ← TV built-in
+│  Add alert at 1,305.00                   │  ← TV built-in
+│  ────────────────────────────────────    │
+│  Buy at 1,305.00  →                      │  ← StockPilot extension
+│  Sell at 1,305.00 →                      │  ← StockPilot extension
+│  ────────────────────────────────────    │
+│  Clone chart                             │  ← TV built-in
+│  Chart settings                          │  ← TV built-in
+└──────────────────────────────────────────┘
+
+"Buy / Sell at price" opens the Order form (05_orders.txt) pre-filled with
+the clicked price. This is implemented via TV's custom context menu extension API.
+
+
+================================================================================
+DATAFEED ADAPTER (frontend only — connects TV to StockPilot backend)
+================================================================================
+
+The TradingView Charting Library requires a JavaScript IBasicDataFeed implementation:
+
+resolveSymbol(symbolName)
+  → calls GET /instruments/search?q={symbolName}
+  → returns SymbolInfo (name, description, type, exchange, minmov, pricescale…)
+
+getBars(symbolInfo, resolution, from, to, onResult)
+  → calls GET /historical/{instrument_token}?interval={resolution}&from={from}&to={to}
+  → converts backend candle array to TV Bar array: { time, open, high, low, close, volume }
+
+subscribeBars(symbolInfo, resolution, onRealtimeCallback, uid)
+  → v1: polls GET /historical every 60 seconds for the last candle (no WebSocket)
+  → v2: upgrade to WebSocket stream
+
+unsubscribeBars(uid)
+  → clears the polling interval
+
+searchSymbols(userInput, exchange, type, onResult)
+  → calls GET /instruments/search?q={userInput}&exchange={exchange}
+
+
+================================================================================
+LOADING / ERROR STATES
+================================================================================
+
+Chart loading:
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                    │
+│              ○  Loading INFY — chart data…                         │
+│                                                                    │
+└──────────────────────────────────────────────────────────────────┘
+
+No data available:
+┌──────────────────────────────────────────────────────────────────┐
+│                                                                    │
+│      ⚠  No data available for INFY on this interval / range       │
+│         (Kite API limit: intraday data only for last 60 days)      │
+│                                                                    │
+└──────────────────────────────────────────────────────────────────┘
+
+Kite session expired (mid-session):
+┌──────────────────────────────────────────────────────────────────┐
+│   ⚠  Your Kite session has expired. Chart data is unavailable.    │
+│      [ Re-authenticate with Kite ]                                 │
+└──────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+FALLBACK: LIGHTWEIGHT CHARTS LAYOUT (if Charting Library access not granted)
+================================================================================
+
+If TradingView Charting Library access is denied, TradingView Lightweight Charts
+(open source, MIT licence) is used. Layout reverts to the custom toolbar approach:
+
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│  [≡]  StockPilot      ● MARKET OPEN                              [↺]  ABC123    │
+├──────┬───────────────────────────────────────────────────────────────────────────┤
+│      │                                                                            │
+│ [D]  │  [ 🔍 Search symbol... ▾ ]   NSE ▾   [ 5m  15m  30m  1H  D ]            │
+│ [C]  │  ─────────────────────────────────────────────────────────────────────── │
+│ [K]  │  Drawing: [↖] [↗] [↔] [⬛] [💬] [🗑 Clear]  [💾 Save drawings]          │
+│ [S]  │  ─────────────────────────────────────────────────────────────────────── │
+│ [B]  │  [ Lightweight Charts candlestick canvas — no built-in indicator UI ]    │
+│ [O]  │  [ Indicators added as series via POST /charts/indicators/compute ]       │
+│ [A]  │                                                                            │
+│      │  ┌──────────────── INDICATOR PANEL ─────────────────────────────────┐    │
+│      │  │ [ + Add Indicator ▾ ]         [ Manage ]                          │    │
+│      │  │ Active: EMA(20) · EMA(50) · Bollinger Bands · RSI(14) · MACD     │    │
+│      │  └──────────────────────────────────────────────────────────────────┘    │
+│      │                                                                            │
+└──────┴───────────────────────────────────────────────────────────────────────────┘
+
+In the Lightweight Charts fallback, indicators are fetched from backend:
+  GET /charts/indicators/compute?instrument_token=&interval=&indicators=EMA_20,...
+Backend computes series using pandas-ta and returns time-series arrays.
+Frontend renders them as overlay/sub-pane series on the Lightweight Chart.
