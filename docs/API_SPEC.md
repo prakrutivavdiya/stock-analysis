@@ -416,7 +416,7 @@ Update KPI name, formula, return_type, description, is_active, or display_order.
 ---
 
 ### `POST /kpis/{kpi_id}/compute`
-Compute a single KPI for given instruments on a date. Result is returned to frontend for IndexedDB caching — not stored in DB.
+Compute a single KPI for given instruments on a date. Result is returned to frontend for Zustand store caching — not stored in DB.
 
 **Request:**
 ```json
@@ -441,7 +441,7 @@ Compute a single KPI for given instruments on a date. Result is returned to fron
 ---
 
 ### `GET /kpis/portfolio`
-Compute all active KPIs for all current holdings on D-1 in one call. Frontend caches the result in IndexedDB.
+Compute all active KPIs for all current holdings on D-1 in one call. Frontend caches the result in the Zustand store.
 
 **Response:**
 ```json

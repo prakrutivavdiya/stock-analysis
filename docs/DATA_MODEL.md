@@ -11,7 +11,7 @@
 
 ```
 Backend PostgreSQL: 7 tables
-Frontend IndexedDB:  7 stores   (derived + live data)
+Frontend Zustand store: 7 slices  (in-memory, session-scoped)
 Frontend localStorage: simple key-value preferences
 ```
 
@@ -130,7 +130,7 @@ User-defined KPI formula definitions.
 | `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
 | `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
 
-**Note:** KPI definitions are per-user — each user maintains their own KPI library. Computed KPI values are NOT stored in the DB. They are computed on demand via the `/kpis/portfolio` endpoint (using `ohlcv_cache` for TA indicators and `fundamental_cache` for P/E and EPS) and cached in frontend IndexedDB for the session.
+**Note:** KPI definitions are per-user — each user maintains their own KPI library. Computed KPI values are NOT stored in the DB. They are computed on demand via the `/kpis/portfolio` endpoint (using `ohlcv_cache` for TA indicators and `fundamental_cache` for P/E and EPS) and cached in the frontend Zustand store for the session.
 
 ---
 
@@ -204,19 +204,20 @@ Cached fundamental data (P/E ratio, EPS) sourced from NSE India. Refreshed weekl
 
 ---
 
-## Frontend Storage (IndexedDB via Dexie.js)
+## Frontend State (Zustand Store — `src/app/data/store.ts`)
 
-These are NOT database tables — they are client-side stores. See [STORAGE_STRATEGY.md](STORAGE_STRATEGY.md).
+In-memory single source of truth. Not persisted — all slices reset on page refresh.
+See [STORAGE_STRATEGY.md](STORAGE_STRATEGY.md) for the decision rationale.
 
-| Store | Schema | TTL |
+| Slice | Schema | TTL |
 |-------|--------|-----|
-| `holdings` | `{ fetchedAt, data[] }` | 60 seconds |
-| `positions` | `{ fetchedAt, data[] }` | 60 seconds |
-| `orders_today` | `{ fetchedAt, data[] }` | 30 seconds |
-| `margins` | `{ fetchedAt, data }` | 30 seconds |
-| `kpi_values` | `{ kpiId, instrumentToken, date, value }` | Until next D-1 |
-| `ohlcv_session` | `{ instrumentToken, interval, candles[] }` | Browser session |
-| `indicator_values` | `{ key, series[] }` | Browser session |
+| `holdings` | `{ fetchedAt, data: Holding[] }` | 60 seconds |
+| `positions` | `{ fetchedAt, data: Position[] }` | 60 seconds |
+| `ordersToday` | `{ fetchedAt, data: Order[] }` | 30 seconds |
+| `margins` | `{ fetchedAt, data: Margin }` | 30 seconds |
+| `kpiValues` | `Record<"kpiId::token::date", KpiValueRecord>` | Browser session |
+| `ohlcvSession` | `Record<"token::interval", OhlcvCandle[]>` | Browser session |
+| `indicatorValues` | `Record<key, series[]>` | Browser session |
 
 ## Frontend (localStorage)
 

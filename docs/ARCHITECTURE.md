@@ -21,21 +21,18 @@ See [AUTH_IMPL.md](AUTH_IMPL.md) for Kite OAuth flow, multi-user KiteConnect man
 │  │            (TradingView Lightweight Charts)                          │   │
 │  │                                                                      │   │
 │  │  ┌─────────────────────────┐  ┌────────────────────────────────┐    │   │
-│  │  │  Frontend State Layer   │  │   Frontend Storage             │    │   │
-│  │  │  (Zustand / React Query)│  │                                │    │   │
-│  │  │                         │  │  IndexedDB (Dexie.js)          │    │   │
-│  │  │  - API response caching │  │  - holdings (TTL 60s)          │    │   │
-│  │  │  - Optimistic updates   │  │  - positions (TTL 60s)         │    │   │
-│  │  │  - TV DataFeed adapter  │  │  - orders (TTL 30s)            │    │   │
-│  │  │    (IBasicDataFeed)     │  │  - kpi_values (daily)          │    │   │
-│  │  │    bridges TV↔backend  │  │  - ohlcv_session (session)     │    │   │
-│  │  │  - TV computes chart    │  │                                │    │   │
-│  │  └─────────────────────────┘  │                                │    │   │
-│  │                               │  localStorage                  │    │   │
-│  │                               │  - theme, defaults             │    │   │
-│  │                               │  - chart state per instrument  │    │   │
-│  │                               │  - column preferences          │    │   │
-│  │                               └────────────────────────────────┘    │   │
+│  │  │  Zustand Store          │  │   localStorage                 │    │   │
+│  │  │  (single source of      │  │   (via localPrefs.ts)          │    │   │
+│  │  │   truth — in-memory)    │  │                                │    │   │
+│  │  │                         │  │  - pref_theme                  │    │   │
+│  │  │  - holdings (TTL 60s)   │  │  - pref_default_interval       │    │   │
+│  │  │  - positions (TTL 60s)  │  │  - pref_visible_kpi_columns    │    │   │
+│  │  │  - ordersToday (30s)    │  │  - pref_visible_holdings_cols  │    │   │
+│  │  │  - margins (TTL 30s)    │  │  - pref_holdings_sort          │    │   │
+│  │  │  - kpiValues (session)  │  │  - chart_{token}_{interval}    │    │   │
+│  │  │  - ohlcvSession         │  │  - notification prefs          │    │   │
+│  │  │  - indicatorValues      │  └────────────────────────────────┘    │   │
+│  │  └─────────────────────────┘                                        │   │
 │  └───────────────────────────┬──────────────────────────────────────────┘   │
 └──────────────────────────────│───────────────────────────────────────────────┘
                                │ HTTPS + JWT (httpOnly cookie)
@@ -122,7 +119,7 @@ See [AUTH_IMPL.md](AUTH_IMPL.md) for Kite OAuth flow, multi-user KiteConnect man
 └───────────────────────┴─────────────┴──────────────────┴──────────────┘
 ```
 
-LS = localStorage · IDB = IndexedDB
+LS = localStorage · ZS = Zustand store
 
 ---
 
@@ -201,9 +198,9 @@ stock-analysis/
 │   │   ├── api/                   ← API client (Axios / React Query)
 │   │   ├── components/
 │   │   ├── pages/
-│   │   ├── store/                 ← Zustand state
-│   │   ├── db/                    ← Dexie.js IndexedDB setup
-│   │   │   └── index.ts           ← Store definitions + TTL helpers
+│   │   ├── data/
+│   │   │   ├── store.ts           ← Zustand store (single source of truth)
+│   │   │   └── localPrefs.ts      ← localStorage helpers (individual keys)
 │   │   └── utils/
 │   └── ...
 │
@@ -220,7 +217,7 @@ stock-analysis/
 ```
 User opens chart for INFY, 15m, last 30 days
   │
-  ├─ Check IndexedDB ohlcv_session for (INFY, 15m, date range)
+  ├─ Check Zustand ohlcvSession for (INFY, 15m) — in-memory session cache
   │        HIT → render immediately
   │        MISS ↓
   │
@@ -229,13 +226,13 @@ User opens chart for INFY, 15m, last 30 days
   │              HIT → return from DB
   │              MISS → fetch from Kite API → store in ohlcv_cache → return
   │
-  ├─ Store candles in IndexedDB ohlcv_session
+  ├─ Store candles in Zustand ohlcvSession
   ├─ Render chart (TradingView Lightweight Charts)
   │
   └─ For each active indicator (e.g., EMA(20)):
        GET /charts/indicators/compute?instrument_token=...&indicators=EMA_20
        Backend computes from ohlcv_cache using pandas-ta
-       Store in IndexedDB indicator_values (session)
+       Store in Zustand indicatorValues (session)
        Render overlay on chart
 ```
 
@@ -256,7 +253,7 @@ User confirms
     └─ return { order_id, status } or { error }
   │
   Frontend:
-    └─ Invalidate orders_today in IndexedDB → re-fetch
+    └─ Invalidate Zustand ordersToday slice → re-fetch
 ```
 
 ---
@@ -302,8 +299,8 @@ User confirms
 | KPI return types | SCALAR / BOOLEAN / CATEGORICAL | Three types needed to express numeric signals, flag signals, and descriptive labels (Buy/Sell/Hold) |
 | Supported intervals | 5m, 15m, 30m, 1hr, day | Simplified from original 8 intervals; covers all practical use cases |
 | Holdings/Positions | Never persisted | Always real-time Kite data; frontend caches with short TTL per user session |
-| OHLCV data | Backend only, global | Too large for IndexedDB; shared across users — fetched once, served to all |
-| Frontend data lib | Dexie.js (IndexedDB) | Typed, promise-based, excellent TTL support |
+| OHLCV data | Backend only, global | Too large for browser memory beyond one session; shared across users — fetched once, served to all |
+| Frontend state | Zustand store (in-memory) | Single source of truth; lightweight (~3KB); synchronous; no browser DB API overhead; data is always re-fetched on reload anyway |
 | Chart library (primary) | TradingView Charting Library | Full indicator library (100+), drawing tools (50+), sub-panes — all built-in; indicators computed client-side by TV, not by backend; free for non-commercial use (apply at tradingview.com) |
 | Chart library (fallback) | TradingView Lightweight Charts | Open source (MIT); used if Charting Library access denied; indicators computed by backend pandas-ta and sent as series |
 | Chart data bridge | JS DataFeed adapter (IBasicDataFeed) | Frontend-only; translates TV data requests to StockPilot backend calls: getBars()→/historical, resolveSymbol()→/instruments, searchSymbols()→/instruments/search |

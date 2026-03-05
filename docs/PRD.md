@@ -329,17 +329,16 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 | Scheduled Jobs | APScheduler (D-1 data fetch, KPI recompute at market open) |
 | TA Library | `pandas-ta` (no C dependencies, runs on Python DataFrames) |
 | Frontend | React + TypeScript |
-| Frontend State | Zustand + React Query |
-| Frontend DB | Dexie.js (IndexedDB) — for live data caching + session data |
+| Frontend State | Zustand (single source of truth for all live + session data) |
 | Charting (primary) | TradingView Charting Library — free for non-commercial use; apply at tradingview.com/charting-library; requires JS DataFeed adapter |
 | Charting (fallback) | TradingView Lightweight Charts (MIT, open source) — used if Charting Library access not granted; indicators computed by backend pandas-ta |
 | Containerization | Docker + Docker Compose |
 
 ### Storage split summary
 - **Backend PostgreSQL:** Auth state (per user), OHLCV cache (global market data), KPI definitions (per user), chart drawings (per user), fundamental cache (global), audit log (per user)
-- **Frontend IndexedDB:** Live portfolio data (TTL), KPI computed values (daily), OHLCV session cache
-- **TradingView Charting Library:** Manages chart indicators client-side from OHLCV data; indicators are NOT stored in IndexedDB when using the Charting Library (TV manages its own internal state)
-- **Frontend localStorage:** User preferences, chart UI state per instrument
+- **Frontend Zustand store:** Live portfolio data (TTL), KPI computed values (session), OHLCV session cache, indicator series — all in-memory; resets on page refresh
+- **TradingView Charting Library:** Manages chart indicators client-side from OHLCV data; TV manages its own internal state
+- **Frontend localStorage:** User preferences (theme, intervals, column order), chart UI state per instrument
 
 ---
 

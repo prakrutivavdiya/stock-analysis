@@ -1,0 +1,8 @@
+# Development / testing dependencies
+# Install alongside requirements.txt (from backend/ directory):
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+pytest>=8.3
+pytest-asyncio>=0.24      # async test support
+pytest-mock>=3.14         # mocker fixture (unittest.mock wrapper)
+respx>=0.21               # mock httpx requests (NSE scraping tests)
