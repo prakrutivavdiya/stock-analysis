@@ -15,18 +15,7 @@ export default function AuthGuard({ children }: { children?: React.ReactNode }) 
         setUser(data);
         setChecking(false);
       })
-      .catch((err: unknown) => {
-        const status = err instanceof ApiError ? err.status : -1;
-        // Dev bypass: if backend is unreachable (status 0) or we're running
-        // dev-skip mode, allow sessionStorage fallback
-        if (
-          (status === 0 || status === -1) &&
-          sessionStorage.getItem("isLoggedIn") === "true"
-        ) {
-          setChecking(false);
-          return;
-        }
-        // 401 is handled by apiFetch (redirect), but guard against it anyway
+      .catch(() => {
         navigate("/login");
       });
   }, [navigate, setUser]);

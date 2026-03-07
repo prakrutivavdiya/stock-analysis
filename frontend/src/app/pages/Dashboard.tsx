@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
   ChevronDown,
@@ -23,6 +23,8 @@ import {
   mapMargins,
 } from "../api/portfolio";
 import { getKpiPortfolio } from "../api/kpis";
+import { getPreferences, savePreferences } from "../api/preferences";
+import { visibleHoldingsColumns, holdingsSort } from "../data/localPrefs";
 import { ApiError } from "../api/client";
 
 // ── Column definitions ─────────────────────────────────────────────────────
@@ -128,7 +130,7 @@ const ALL_COLUMNS: ColDef[] = [
     label: "RSI (14)",
     group: "kpi",
     align: "right",
-    format: (h) => h.kpis?.dailyRSI?.toFixed(1) ?? "—",
+    format: (h) => (h.kpis?.dailyRSI != null ? (h.kpis.dailyRSI as number).toFixed(1) : "—"),
   },
   {
     id: "rsiOverbought",
@@ -137,7 +139,7 @@ const ALL_COLUMNS: ColDef[] = [
     align: "right",
     format: (h) => {
       const val = h.kpis?.rsiOverbought;
-      if (val === undefined) return "—";
+      if (val == null) return "—";
       return val ? (
         <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-red-900/30 text-red-400">
           true
@@ -185,7 +187,7 @@ const ALL_COLUMNS: ColDef[] = [
     align: "right",
     format: (h) => {
       const v = h.kpis?.from52WeekHigh;
-      if (v === undefined) return "N/A";
+      if (v == null) return "N/A";
       return (
         <span className={v >= 0 ? "text-green-400" : "text-red-400"}>
           {v >= 0 ? "+" : ""}{v.toFixed(1)}%
@@ -238,15 +240,59 @@ const FILTER_OPTIONS: { value: FilterKey; label: string }[] = [
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [visibleCols, setVisibleCols] = useState<ColId[]>(DEFAULT_COLS);
+  const [visibleCols, setVisibleCols] = useState<ColId[]>(() => {
+    const saved = visibleHoldingsColumns.get();
+    return saved.length > 0 ? (saved as ColId[]) : DEFAULT_COLS;
+  });
+  const [userKpis, setUserKpis] = useState<{ name: string; returnType: string }[]>([]);
+  const [visibleUserKpis, setVisibleUserKpis] = useState<string[]>([]);
   const [showColPicker, setShowColPicker] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
   const [loading, setLoading] = useState(false);
   const [xirr, setXirr] = useState<number | null>(null);
 
-  const [sortKey, setSortKey] = useState<SortKey>("symbol");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const savedSort = holdingsSort.get();
+  const [sortKey, setSortKey] = useState<SortKey>((savedSort.column as SortKey) || "symbol");
+  const [sortDir, setSortDir] = useState<SortDir>(savedSort.direction);
+
+  // PD-09: Load preferences from backend on mount; fall back to localStorage
+  useEffect(() => {
+    getPreferences()
+      .then(({ preferences: p }) => {
+        if (p.visible_holdings_columns.length > 0) {
+          setVisibleCols(p.visible_holdings_columns as ColId[]);
+          visibleHoldingsColumns.set(p.visible_holdings_columns);
+        }
+        if (p.holdings_sort.column) {
+          setSortKey(p.holdings_sort.column as SortKey);
+          setSortDir(p.holdings_sort.direction);
+          holdingsSort.set(p.holdings_sort);
+        }
+      })
+      .catch(() => { /* offline or unauthenticated — use localStorage values already set */ });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // PD-09: Persist column visibility to localStorage + backend after every change (skip first mount)
+  const colsInitialized = useRef(false);
+  useEffect(() => {
+    if (!colsInitialized.current) { colsInitialized.current = true; return; }
+    visibleHoldingsColumns.set(visibleCols);
+    savePreferences({
+      visible_holdings_columns: visibleCols,
+      holdings_sort: { column: sortKey, direction: sortDir },
+    }).catch(() => {}); // best-effort — localStorage is the fallback
+  }, [visibleCols]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sortInitialized = useRef(false);
+  useEffect(() => {
+    if (!sortInitialized.current) { sortInitialized.current = true; return; }
+    holdingsSort.set({ column: sortKey, direction: sortDir });
+    savePreferences({
+      visible_holdings_columns: visibleCols,
+      holdings_sort: { column: sortKey, direction: sortDir },
+    }).catch(() => {}); // best-effort
+  }, [sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
 
   // Zustand store
@@ -298,21 +344,31 @@ export default function Dashboard() {
       // Fetch KPI portfolio values and merge into holdings
       try {
         const kpiRes = await getKpiPortfolio();
-        // Build a map: tradingsymbol → kpi_values
+        // Build a map: tradingsymbol → flat kpi values (extract .value from each entry)
         const kpiMap = new Map(
-          kpiRes.results.map((r) => [r.tradingsymbol, r.kpi_values])
+          kpiRes.results.map((r) => {
+            const flat: Record<string, unknown> = {};
+            for (const [name, data] of Object.entries(r.kpi_values)) {
+              flat[name] = (data as { value: unknown }).value;
+            }
+            return [r.tradingsymbol, flat];
+          })
         );
         // Update holdings in store with merged kpi data
         const currentHoldings = useAppStore.getState().holdings.data ?? [];
         if (currentHoldings.length > 0) {
           const merged = currentHoldings.map((h) => ({
             ...h,
-            kpis: {
-              ...h.kpis,
-              ...(kpiMap.get(h.symbol) ?? {}),
-            },
+            kpis: { ...h.kpis, ...(kpiMap.get(h.symbol) ?? {}) },
           }));
           setStoreHoldings(merged);
+        }
+        // Store user-defined KPI metadata for dynamic columns
+        if (kpiRes.kpis?.length > 0) {
+          setUserKpis(kpiRes.kpis.map((k) => ({ name: k.name, returnType: k.return_type })));
+          setVisibleUserKpis((prev) =>
+            prev.length > 0 ? prev : kpiRes.kpis.map((k) => k.name)
+          );
         }
       } catch {
         // KPI portfolio is non-critical; ignore failures silently
@@ -375,7 +431,7 @@ export default function Dashboard() {
     });
 
     return rows;
-  }, [sortKey, sortDir, activeFilter]);
+  }, [holdings, sortKey, sortDir, activeFilter]);
 
   // PD-04: Portfolio summary totals
   const totals = useMemo(() => {
@@ -390,11 +446,17 @@ export default function Dashboard() {
   const intradayPositions = positions.filter((p) => p.product === "MIS");
   const showAutoSquareWarning = intradayPositions.length > 0;
 
-  const toggleCol = (id: ColId) => {
+  const toggleCol = useCallback((id: ColId) => {
     setVisibleCols((prev) =>
       prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
     );
-  };
+  }, []);
+
+  const toggleUserKpi = useCallback((name: string) => {
+    setVisibleUserKpis((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+    );
+  }, []);
 
   const colDef = (id: ColId) => ALL_COLUMNS.find((c) => c.id === id)!;
 
@@ -558,7 +620,7 @@ export default function Dashboard() {
                   </label>
                 ))}
                 <p className="text-xs font-medium text-muted-foreground mb-2 mt-3 uppercase tracking-wider">
-                  KPI Columns
+                  KPIs
                 </p>
                 {ALL_COLUMNS.filter((c) => c.group === "kpi").map((c) => (
                   <label
@@ -574,6 +636,27 @@ export default function Dashboard() {
                     {c.label}
                   </label>
                 ))}
+                {userKpis.length > 0 && (
+                  <>
+                    <p className="text-xs font-medium text-muted-foreground mb-2 mt-3 uppercase tracking-wider">
+                      My KPIs
+                    </p>
+                    {userKpis.map((k) => (
+                      <label
+                        key={k.name}
+                        className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={visibleUserKpis.includes(k.name)}
+                          onChange={() => toggleUserKpi(k.name)}
+                          className="accent-[#FF6600]"
+                        />
+                        {k.name}
+                      </label>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -613,6 +696,11 @@ export default function Dashboard() {
                   </th>
                 );
               })}
+              {visibleUserKpis.map((name) => (
+                <th key={`kpi-${name}`} className="px-4 py-2.5 text-xs text-muted-foreground font-medium text-right">
+                  {name}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -645,12 +733,24 @@ export default function Dashboard() {
                     </td>
                   );
                 })}
+                {visibleUserKpis.map((name) => {
+                  const val = (holding.kpis as Record<string, unknown> | undefined)?.[name];
+                  const displayVal = val == null ? "—"
+                    : typeof val === "boolean" ? (val ? "Yes" : "No")
+                    : typeof val === "number" ? val.toFixed(2)
+                    : String(val);
+                  return (
+                    <td key={`kpi-${name}`} className="px-4 py-2.5 text-right text-xs">
+                      {displayVal}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
             {filteredAndSorted.length === 0 && (
               <tr>
                 <td
-                  colSpan={visibleCols.length + 1}
+                  colSpan={visibleCols.length + visibleUserKpis.length + 1}
                   className="px-4 py-12 text-center text-muted-foreground"
                 >
                   No holdings match the current filter.

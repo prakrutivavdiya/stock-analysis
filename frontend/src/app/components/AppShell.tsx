@@ -92,7 +92,6 @@ export default function AppShell() {
       }
     }
     clearUser();
-    sessionStorage.removeItem("isLoggedIn");
     navigate("/login");
   };
 

@@ -30,6 +30,87 @@ router = APIRouter()
 
 VALID_INTERVALS = {"5minute", "15minute", "30minute", "60minute", "day"}
 
+# Yahoo Finance interval mapping (fallback when Kite permission denied)
+_YF_INTERVAL_MAP = {
+    "5minute": "5m",
+    "15minute": "15m",
+    "30minute": "30m",
+    "60minute": "60m",
+    "day": "1d",
+}
+
+
+async def _fetch_from_yfinance(
+    db: DBSession,
+    instrument_token: int,
+    tradingsymbol: str,
+    exchange: str,
+    interval: str,
+    from_dt: datetime,
+    to_dt: datetime,
+) -> list[Candle]:
+    """Fallback: fetch OHLCV via Yahoo Finance when Kite lacks historical permission."""
+    import yfinance as yf  # imported lazily — not needed for normal flow
+
+    suffix = ".NS" if exchange.upper() in ("NSE", "NFO") else ".BO"
+    yf_symbol = f"{tradingsymbol}{suffix}"
+    yf_interval = _YF_INTERVAL_MAP.get(interval, "1d")
+
+    def _download():
+        ticker = yf.Ticker(yf_symbol)
+        return ticker.history(
+            start=from_dt.strftime("%Y-%m-%d"),
+            end=(to_dt + timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval=yf_interval,
+            auto_adjust=True,
+        )
+
+    try:
+        df = await asyncio.to_thread(_download)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Yahoo Finance fallback error: {exc}"
+        ) from exc
+
+    if df is None or df.empty:
+        raise HTTPException(
+            status_code=404, detail=f"No historical data found for {yf_symbol}"
+        )
+
+    candles: list[Candle] = []
+    for ts, row in df.iterrows():
+        dt: datetime = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else datetime.fromisoformat(str(ts))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+
+        db.add(OHLCVCache(
+            instrument_token=instrument_token,
+            tradingsymbol=tradingsymbol,
+            exchange=exchange,
+            interval=interval,
+            candle_timestamp=dt,
+            open=float(row["Open"]),
+            high=float(row["High"]),
+            low=float(row["Low"]),
+            close=float(row["Close"]),
+            volume=int(row.get("Volume", 0)),
+        ))
+        candles.append(Candle(
+            timestamp=dt,
+            open=float(row["Open"]),
+            high=float(row["High"]),
+            low=float(row["Low"]),
+            close=float(row["Close"]),
+            volume=int(row.get("Volume", 0)),
+        ))
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+
+    return candles
+
 
 def _prev_trading_day() -> date:
     d = datetime.now(timezone.utc).date() - timedelta(days=1)
@@ -54,6 +135,12 @@ async def _fetch_and_cache(
             kite.historical_data, instrument_token, from_dt, to_dt, interval
         )
     except Exception as exc:
+        exc_str = str(exc).lower()
+        if "permission" in exc_str or "403" in exc_str or "subscription" in exc_str:
+            # Kite historical data requires a paid add-on; fall back to Yahoo Finance
+            return await _fetch_from_yfinance(
+                db, instrument_token, tradingsymbol, exchange, interval, from_dt, to_dt
+            )
         raise HTTPException(status_code=502, detail=f"Kite historical API error: {exc}") from exc
 
     candles: list[Candle] = []
@@ -121,6 +208,8 @@ async def get_historical(
     interval: str = Query(default="day"),
     from_date: str = Query(default=""),
     to_date: str = Query(default=""),
+    tradingsymbol: str = Query(default=""),
+    exchange: str = Query(default="NSE"),
 ) -> HistoricalResponse:
     """
     Fetch OHLCV candles.
@@ -167,16 +256,16 @@ async def get_historical(
         ]
     else:
         source = "kite"
-        # Resolve tradingsymbol and exchange from cache or Kite
-        symbol = cached[0].tradingsymbol if cached else str(instrument_token)
-        exchange = cached[0].exchange if cached else "NSE"
+        # Resolve tradingsymbol and exchange: cache > query param > fallback
+        symbol = cached[0].tradingsymbol if cached else (tradingsymbol or str(instrument_token))
+        exch = cached[0].exchange if cached else exchange
         candles = await _fetch_and_cache(
-            db, kite, instrument_token, symbol, exchange, interval, from_dt, to_dt
+            db, kite, instrument_token, symbol, exch, interval, from_dt, to_dt
         )
 
     return HistoricalResponse(
         instrument_token=instrument_token,
-        tradingsymbol=cached[0].tradingsymbol if cached else str(instrument_token),
+        tradingsymbol=cached[0].tradingsymbol if cached else (tradingsymbol or str(instrument_token)),
         interval=interval,
         from_date=from_d.isoformat(),
         to_date=to_d.isoformat(),

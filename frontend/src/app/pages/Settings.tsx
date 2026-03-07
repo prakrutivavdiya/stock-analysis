@@ -131,7 +131,6 @@ export default function Settings() {
       // Proceed with client-side cleanup even if backend is unreachable
     }
     clearUser();
-    sessionStorage.removeItem("isLoggedIn");
     navigate("/login");
   };
 
@@ -155,7 +154,6 @@ export default function Settings() {
       }
     }
     clearUser();
-    sessionStorage.removeItem("isLoggedIn");
     navigate("/login");
   };
 

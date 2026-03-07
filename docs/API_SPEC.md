@@ -703,7 +703,41 @@ Read-only. No write endpoints exist.
 
 ---
 
-## 11. System
+## 11. User Preferences (PD-09)
+
+### `GET /user/preferences`
+
+Returns the authenticated user's UI preferences. Defaults are returned if no preferences have been saved yet.
+
+**Response `200`:**
+```json
+{
+  "preferences": {
+    "visible_holdings_columns": ["quantity", "ltp", "pnl"],
+    "holdings_sort": { "column": "pnlPercent", "direction": "desc" }
+  }
+}
+```
+
+---
+
+### `PUT /user/preferences`
+
+Overwrites the user's UI preferences.
+
+**Request Body:**
+```json
+{
+  "visible_holdings_columns": ["quantity", "ltp", "pnl"],
+  "holdings_sort": { "column": "pnlPercent", "direction": "desc" }
+}
+```
+
+**Response `200`:** Same shape as `GET /user/preferences`.
+
+---
+
+## 12. System
 
 ### `GET /health`
 No auth required. Used by Docker health checks.

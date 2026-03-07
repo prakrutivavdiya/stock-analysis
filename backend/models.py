@@ -94,6 +94,13 @@ class User(Base):
         comment="When TRUE, orders are simulated locally and never sent to Kite",
     )
 
+    # UI preferences (PD-09) — stored as JSON blob; cross-device persistence
+    # Schema: {visible_holdings_columns: string[], holdings_sort: {column: string, direction: "asc"|"desc"}}
+    ui_preferences: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True, default=None,
+        comment="User UI preferences: column visibility, sort state (PD-09)",
+    )
+
     # Account status
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("TRUE"),

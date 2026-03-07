@@ -40,5 +40,8 @@ slowapi>=0.1.9
 # ── XIRR computation ─────────────────────────────────────────────────────────
 pyxirr>=0.10.0
 
+# ── Historical data fallback (when Kite historical add-on is not subscribed) ──
+yfinance>=0.2.0
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dateutil>=2.9.0

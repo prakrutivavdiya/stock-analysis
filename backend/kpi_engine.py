@@ -70,6 +70,84 @@ SCALAR_NAMES: frozenset[str] = frozenset({
 _TOKEN_RE = re.compile(r"\b([A-Z_][A-Z_0-9]*)\s*(?:\(\s*([\d,\s]*)\s*\))?")
 _COMPARE_RE = re.compile(r"^(.+?)\s*(>=|<=|==|>|<)\s*([\d.]+)\s*$")
 
+# ── Categorical IF-chain helpers ──────────────────────────────────────────────
+_IF_PREFIX_RE = re.compile(r"^IF\s*\(", re.IGNORECASE)
+_STRING_LITERAL_RE = re.compile(r'^"([^"]+)"$')
+_COND_OP_RE = re.compile(r"^(.+?)\s*(>=|<=|==|>|<)\s*(.+)$")
+
+# ── AND / OR compound-condition helpers ───────────────────────────────────────
+_AND_RE = re.compile(r"\bAND\b", re.IGNORECASE)
+_OR_RE  = re.compile(r"\bOR\b",  re.IGNORECASE)
+
+
+def _split_if_args(inner: str) -> tuple[str, str, str]:
+    """Split the content inside IF(...) into (condition, label, else_expr).
+    Respects nested parentheses and string literals."""
+    depth, in_string = 0, False
+    comma_idx: list[int] = []
+    i = 0
+    while i < len(inner):
+        c = inner[i]
+        if c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+            elif c == ',' and depth == 0:
+                comma_idx.append(i)
+                if len(comma_idx) == 2:
+                    break
+        i += 1
+    if len(comma_idx) < 2:
+        raise FormulaValidationError(
+            'IF formula must have the form: IF(condition, "label", else_expr)'
+        )
+    p1, p2 = comma_idx[0], comma_idx[1]
+    return inner[:p1].strip(), inner[p1 + 1:p2].strip(), inner[p2 + 1:].strip()
+
+
+def _parse_if_chain(
+    formula: str,
+) -> tuple[list[tuple[str, str]], str]:
+    """Parse a nested IF formula into (conditions, default_label).
+
+    conditions = [(lhs_expr, op, rhs_expr, true_label), ...]
+    default_label = string returned when no condition matches.
+    Raises FormulaValidationError on any syntax or identifier error.
+    """
+    conditions: list[tuple[str, str]] = []
+    current = formula.strip()
+    while True:
+        # Base case: bare string literal → default label
+        str_m = _STRING_LITERAL_RE.match(current)
+        if str_m:
+            return conditions, str_m.group(1)
+
+        if not _IF_PREFIX_RE.match(current) or not current.endswith(")"):
+            raise FormulaValidationError(
+                "CATEGORICAL formula must be: IF(cond, \"label\", ...) "
+                "ending with a \"default\" string literal"
+            )
+
+        # Strip IF( ... ) — find the opening paren
+        inner = current[current.index("(") + 1: -1]
+        cond_str, label_str, else_str = _split_if_args(inner)
+
+        # Validate label is a non-empty quoted string
+        label_m = _STRING_LITERAL_RE.match(label_str.strip())
+        if not label_m:
+            raise FormulaValidationError(
+                f'Label must be a double-quoted string (e.g. "Sell Signal"), got {label_str!r}'
+            )
+
+        # Validate condition — may be a compound AND/OR expression
+        _validate_compound_condition(cond_str)
+
+        conditions.append((cond_str, label_m.group(1)))
+        current = else_str.strip()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Validation
@@ -88,35 +166,55 @@ def validate_formula(formula: str, return_type: str) -> None:
     f = formula.strip()
 
     if return_type == "CATEGORICAL":
-        if not re.fullmatch(r"BB_POSITION\s*\(\s*\d+\s*\)", f):
-            raise FormulaValidationError(
-                "CATEGORICAL formulas must use BB_POSITION(period), e.g. BB_POSITION(20)"
-            )
+        if re.fullmatch(r"BB_POSITION\s*\(\s*\d+\s*\)", f):
+            return  # legacy shorthand — still valid
+        _parse_if_chain(f)  # raises FormulaValidationError on invalid syntax
         return
 
-    m = _COMPARE_RE.match(f)
-    if m:
+    if _is_boolean_expr(f):
         if return_type == "SCALAR":
             raise FormulaValidationError(
-                "SCALAR formulas must not contain a comparison operator. "
-                "Use BOOLEAN return_type for conditions like RSI(14) > 70."
+                "SCALAR formulas must not contain comparison operators or AND/OR. "
+                "Use BOOLEAN return type for conditions like RSI(14) > 70."
             )
-        lhs = m.group(1).strip()
-        try:
-            float(m.group(3))
-        except ValueError:
-            raise FormulaValidationError(
-                f"Right-hand side of comparison must be a number; got {m.group(3)!r}"
-            )
-    else:
-        if return_type == "BOOLEAN":
-            raise FormulaValidationError(
-                "BOOLEAN formulas must contain a comparison operator (>, <, >=, <=, ==). "
-                "Example: RSI(14) > 70"
-            )
-        lhs = f
+        _validate_compound_condition(f)
+        return
 
-    _validate_expression(lhs)
+    if return_type == "BOOLEAN":
+        raise FormulaValidationError(
+            "BOOLEAN formulas must contain a comparison operator (>, <, >=, <=, ==) "
+            "and optionally AND/OR to combine conditions. Example: RSI(14) > 70"
+        )
+    _validate_expression(f)
+
+
+def _validate_compound_condition(cond_str: str) -> None:
+    """Validate a compound condition (AND/OR of atomic comparisons).
+    AND binds before OR (standard precedence).
+    Raises FormulaValidationError if any atom is syntactically invalid or
+    references an unknown identifier."""
+    for or_clause in _OR_RE.split(cond_str):
+        for atom in _AND_RE.split(or_clause):
+            atom = atom.strip()
+            m = _COND_OP_RE.match(atom)
+            if not m:
+                raise FormulaValidationError(
+                    f"Each condition must be 'expr op expr', got {atom!r}. "
+                    f"Supported operators: >=, <=, ==, >, <"
+                )
+            lhs, rhs = m.group(1).strip(), m.group(3).strip()
+            _validate_expression(lhs)
+            try:
+                float(rhs)
+            except ValueError:
+                _validate_expression(rhs)
+
+
+def _is_boolean_expr(f: str) -> bool:
+    """Return True if the formula contains a comparison operator or AND/OR keyword."""
+    return bool(re.search(r"(>=|<=|==|>|<)", f)) or bool(
+        re.search(r"\b(AND|OR)\b", f, re.IGNORECASE)
+    )
 
 
 def _validate_expression(expr: str) -> None:
@@ -338,6 +436,56 @@ def _apply_op(lhs: float, op: str, rhs: float) -> bool:
     }[op]
 
 
+def _eval_compound_condition(cond_str: str, values: dict[str, Any]) -> bool | None:
+    """Evaluate an AND/OR compound condition. AND binds before OR.
+    Returns True/False, or None if every OR-clause had an unavailable value."""
+    all_skipped = True
+    for or_clause in _OR_RE.split(cond_str):
+        clause_true = True
+        clause_skipped = False
+        for atom in _AND_RE.split(or_clause):
+            atom = atom.strip()
+            m = _COND_OP_RE.match(atom)
+            if not m:
+                clause_true = False
+                break
+            lhs_val = _eval_scalar_expr(m.group(1).strip(), values)
+            rhs_str = m.group(3).strip()
+            try:
+                rhs_val: float | None = float(rhs_str)
+            except ValueError:
+                rhs_val = _eval_scalar_expr(rhs_str, values)
+            if lhs_val is None or rhs_val is None:
+                clause_true = False
+                clause_skipped = True
+                break
+            if not _apply_op(lhs_val, m.group(2), rhs_val):
+                clause_true = False
+                break
+        if not clause_skipped:
+            all_skipped = False
+        if clause_true:
+            return True
+    return None if all_skipped else False
+
+
+def _evaluate_categorical_if(
+    formula: str,
+    values: dict[str, Any],
+) -> str | None:
+    """Evaluate a nested IF categorical formula using pre-computed indicator values.
+    Returns the label of the first matching condition, or the default label."""
+    try:
+        conditions, default_label = _parse_if_chain(formula)
+    except FormulaValidationError:
+        return None
+    for cond_str, label in conditions:
+        result = _eval_compound_condition(cond_str, values)
+        if result is True:
+            return label
+    return default_label
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -375,13 +523,9 @@ def evaluate_formula(
         m = re.fullmatch(r"BB_POSITION\s*\(\s*(\d+)\s*\)", f, re.IGNORECASE)
         if m:
             return values.get(f"BB_POSITION({int(m.group(1))})")
-        return None
+        return _evaluate_categorical_if(f, values)
 
-    m = _COMPARE_RE.match(f)
-    if m:
-        lhs_val = _eval_scalar_expr(m.group(1).strip(), values)
-        if lhs_val is None:
-            return None
-        return _apply_op(lhs_val, m.group(2), float(m.group(3)))
+    if return_type == "BOOLEAN":
+        return _eval_compound_condition(f, values)
 
     return _eval_scalar_expr(f, values)

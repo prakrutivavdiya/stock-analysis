@@ -32,6 +32,7 @@ from backend.routers import (
     kpis,
     orders,
     portfolio,
+    preferences,
     system,
 )
 from backend.scheduler import shutdown_scheduler, start_scheduler
@@ -166,3 +167,4 @@ app.include_router(charts.router,       prefix=f"{_V1}/charts",        tags=["ch
 app.include_router(orders.router,       prefix=f"{_V1}/orders",        tags=["orders"])
 app.include_router(gtt.router,          prefix=f"{_V1}/gtt",           tags=["gtt"])
 app.include_router(audit.router,        prefix=f"{_V1}/audit",         tags=["audit"])
+app.include_router(preferences.router,  prefix=f"{_V1}/user/preferences", tags=["preferences"])

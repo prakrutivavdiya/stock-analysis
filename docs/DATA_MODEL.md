@@ -40,6 +40,7 @@ One row per registered user. Each user authenticates with their own Zerodha Kite
 | `exchange_memberships` | JSONB | NOT NULL | Exchanges enabled for this account (e.g. `["NSE","BSE"]`) — from Kite profile, stored at first login |
 | `product_types` | JSONB | NOT NULL | Products enabled (e.g. `["CNC","MIS","NRML"]`) — from Kite profile, stored at first login |
 | `paper_trade_mode` | BOOLEAN | NOT NULL DEFAULT FALSE | When TRUE, orders are simulated locally and never sent to Kite |
+| `ui_preferences` | JSON | NULL | Holdings column visibility and sort preference — `{ visible_holdings_columns, holdings_sort }` — persisted per user for cross-device sync (PD-09) |
 | `is_active` | BOOLEAN | NOT NULL DEFAULT TRUE | FALSE = user banned; blocked at `get_current_user` dependency |
 
 **Indexes:** `kite_user_id` (unique), `email` (unique), `kite_token_expires_at` (for health check job)
@@ -226,6 +227,16 @@ See [STORAGE_STRATEGY.md](STORAGE_STRATEGY.md) for the decision rationale.
 | `pref_theme` | string | `dark` / `light` |
 | `pref_default_interval` | string | e.g., `15m` |
 | `pref_visible_kpi_columns` | JSON array | KPI IDs shown as columns in the portfolio table |
-| `pref_visible_holdings_columns` | JSON array | Standard column IDs shown in the portfolio table (allows hiding e.g. Exchange) |
-| `pref_holdings_sort` | JSON | `{ column, direction }` |
+| `pref_visible_holdings_columns` | JSON array | Local cache of visible column IDs — **written from and synced to `users.ui_preferences`** (PD-09) |
+| `pref_holdings_sort` | JSON | Local cache of `{ column, direction }` — **written from and synced to `users.ui_preferences`** (PD-09) |
 | `chart_{token}_{interval}` | JSON | Zoom, active indicators, panel sizes per chart |
+
+## Backend Database — User Preferences (PD-09)
+
+Holdings column visibility and sort preferences are stored **per user** in the `users.ui_preferences` JSON column for cross-device persistence.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `users.ui_preferences` | JSON | `{ visible_holdings_columns: string[], holdings_sort: { column: string, direction: "asc"\|"desc" } }` |
+
+**Flow:** On Dashboard mount, the frontend calls `GET /api/v1/user/preferences`; on any column or sort change it calls `PUT /api/v1/user/preferences`. localStorage acts as a fallback when the backend is unreachable (unauthenticated dev session, network error).

@@ -265,23 +265,32 @@ async def compute_kpi(
     )
 
 
+# Built-in standard KPIs always computed for every holding (no user definition needed)
+# key → (formula, return_type)
+_BUILT_IN_KPIS: list[tuple[str, str, str]] = [
+    ("dailyRSI",      "RSI(14)",          "SCALAR"),
+    ("rsiOverbought", "RSI(14) > 70",     "BOOLEAN"),
+    ("bbPosition",    "BB_POSITION(20)",  "CATEGORICAL"),
+    ("peRatio",       "PE_RATIO",         "SCALAR"),
+    ("eps",           "EPS",              "SCALAR"),
+    ("from52WeekHigh","PCT_FROM_52W_HIGH","SCALAR"),
+]
+
+
 @router.get("/portfolio", response_model=KPIPortfolioResponse)
 async def portfolio_kpis(
     current_user: CurrentUser,
     db: DBSession,
     kite: KiteClient,
 ) -> KPIPortfolioResponse:
-    """Compute all active KPIs for all current holdings on D-1 in one call."""
-    # Active KPIs for this user
+    """Compute built-in + user-defined active KPIs for all current holdings."""
+    # Active user-defined KPIs for this user
     kpi_rows = (await db.execute(
         select(KPI).where(
             KPI.user_id == current_user.id,
             KPI.is_active == True,  # noqa: E712
         ).order_by(KPI.display_order)
     )).scalars().all()
-
-    if not kpi_rows:
-        return KPIPortfolioResponse(as_of_date=date.today().isoformat(), kpis=[], results=[])
 
     try:
         holdings = await asyncio.to_thread(kite.holdings)
@@ -319,8 +328,21 @@ async def portfolio_kpis(
         } if fund_row else None
 
         kpi_values: dict[str, dict[str, Any]] = {}
+
+        # Always compute built-in standard KPIs (RSI, BB, fundamentals)
+        for key, formula, return_type in _BUILT_IN_KPIS:
+            try:
+                val = evaluate_formula(formula, df, fundamental, return_type)
+            except Exception:
+                val = None
+            kpi_values[key] = {"value": val}
+
+        # Layer user-defined KPIs on top (by KPI name)
         for kpi in kpi_rows:
-            val = evaluate_formula(kpi.formula, df, fundamental, kpi.return_type)
+            try:
+                val = evaluate_formula(kpi.formula, df, fundamental, kpi.return_type)
+            except Exception:
+                val = None
             kpi_values[kpi.name] = {"value": val}
 
         portfolio_results.append(PortfolioKPIRow(

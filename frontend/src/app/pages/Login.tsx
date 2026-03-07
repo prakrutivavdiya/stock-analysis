@@ -11,10 +11,7 @@ export default function Login() {
   const error = searchParams.get("error");   // "cancelled" | "unauthorized"
   const reason = searchParams.get("reason"); // "expired"
 
-  useEffect(() => {
-    // Landing on /login means the user wants to authenticate — clear stale bypass
-    sessionStorage.removeItem("isLoggedIn");
-  }, [navigate]);
+  useEffect(() => {}, [navigate]);
 
   // H-03: Map URL params to user-facing messages
   const errorMessage = (() => {
@@ -47,16 +44,6 @@ export default function Login() {
       alert("Unable to reach the backend. Is the server running on port 8000?");
     }
   };
-
-  // Dev-mode bypass — localhost only
-  const handleDevLogin = () => {
-    sessionStorage.setItem("isLoggedIn", "true");
-    navigate("/dashboard");
-  };
-
-  const isDev =
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1";
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
@@ -98,18 +85,7 @@ export default function Login() {
             )}
           </button>
 
-          {/* Dev-mode bypass (localhost only) */}
-          {isDev && (
-            <div className="pt-2 border-t border-[#2a2a2a]">
-              <p className="text-xs text-muted-foreground mb-2 text-center">Dev mode</p>
-              <button
-                onClick={handleDevLogin}
-                className="w-full text-xs text-muted-foreground hover:text-foreground border border-[#2a2a2a] hover:border-[#3a3a3a] py-2 rounded transition-colors"
-              >
-                Skip auth (localhost only)
-              </button>
-            </div>
-          )}
+
         </div>
 
         <p className="text-xs text-center text-muted-foreground">

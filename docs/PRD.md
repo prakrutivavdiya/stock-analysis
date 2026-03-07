@@ -1,9 +1,9 @@
 # Product Requirements Document (PRD)
 ## StockPilot — Trading & Analysis Platform
 
-**Version:** 5.0
+**Version:** 5.1
 **Author:** Prakruti Vavdiya
-**Date:** 2026-02-27
+**Date:** 2026-03-07
 **Status:** Draft
 
 ---
@@ -152,6 +152,8 @@ All displayed charges are estimates. Actual charges are determined by Zerodha po
 | Intraday (5m, 15m, 30m, 1hr) | Last 60 days only |
 | Daily candles | Up to ~3 years |
 
+> **Note — Kite historical data add-on:** The Kite Connect historical data API requires a separately purchased add-on subscription. If the add-on is not active, the backend falls back to Yahoo Finance (`yfinance`) to serve the same OHLCV data for NSE (`.NS`) and BSE (`.BO`) instruments. The fallback is transparent to the frontend — data is written to the same `ohlcv_cache` table and subsequent requests are served from cache.
+
 ### 5.9 KPI Data Sourcing Rule
 
 KPI values use live price when the market is open. When the market is closed or live data is unavailable, D-1 closing data is used.
@@ -206,7 +208,7 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 |----|-------------|
 | AU-01 | User must authenticate via Zerodha Kite OAuth flow |
 | AU-02 | On successful Kite login, a signed JWT (RS256, 8h expiry) is issued |
-| AU-03 | All API endpoints require a valid JWT in the Authorization header |
+| AU-03 | All API endpoints require a valid JWT delivered as an `access_token` httpOnly cookie (preferred) or as an `Authorization: Bearer` header fallback |
 | AU-04 | JWT refresh is supported; refresh tokens are stored server-side (hashed) |
 | AU-05 | Session can be explicitly logged out (server-side token revocation) |
 | AU-06 | All Kite API tokens are stored encrypted at rest (AES-256-GCM); tokens are user-scoped and never shared |
@@ -227,6 +229,7 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 | PD-06 | Colour-coded gain/loss indicators |
 | PD-07 | Holdings data auto-refreshes at a configurable interval and on manual refresh |
 | PD-08 | Holdings table displays `t1_quantity` (shares pending T+1 settlement) in a dedicated column, separate from sellable quantity, to prevent accidental over-selling |
+| PD-09 | Column visibility selection and sort preference (column + direction) for the holdings table are persisted **per user** in the backend database (`users.ui_preferences` JSON column) so that preferences survive across devices and browser sessions. The frontend reads them via `GET /user/preferences` on mount (falling back to defaults if unavailable) and writes them via `PUT /user/preferences` on every change. The persisted fields are: `visible_holdings_columns` (list of column IDs) and `holdings_sort` (`{column, direction}`). All other user preferences (theme, chart interval, notification toggles) remain in browser `localStorage` per ST-08. |
 
 ### 7.3 Historical Data
 | ID | Requirement |
@@ -245,27 +248,26 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 | KP-02 | Supported indicator library: full pandas-ta indicator set plus pre-built defaults: daily RSI, P/E Ratio, EPS, % change from 52-week high, % change from 52-week low, Bollinger Band Position Signal |
 | KP-03 | KPIs are computed on-demand by the backend; P/E and EPS require the fundamental data cache (sourced from NSE India); all other indicators computed from OHLCV cache |
 | KP-04 | KPI values reflect live price if market is open; otherwise D-1 data is used |
-| KP-05 | KPI computed values are returned via API and cached by the frontend in IndexedDB (not stored in the backend DB) |
+| KP-05 | KPI computed values are returned via API and cached by the frontend in the Zustand in-memory store (session-scoped; resets on page refresh; not stored in the backend DB) |
 | KP-06 | KPI definitions (formulas) are saved in the backend database |
-| KP-07 | KPI return types: SCALAR (numeric), BOOLEAN (true/false badge), CATEGORICAL (descriptive label e.g. "Buy Signal", "Sell Signal", "Hold") |
+| KP-07 | KPI return types: SCALAR (numeric), BOOLEAN (true/false badge), CATEGORICAL (descriptive label). BOOLEAN formulas may combine multiple conditions using `AND` / `OR` (e.g. `RSI(14) > 70 AND CLOSE > SMA(20)`). CATEGORICAL formulas are user-defined IF chains (`IF(expr op expr, "label", IF(..., "default"))`); each IF condition may also use AND / OR (e.g. `IF(CLOSE >= BB_UPPER(20) AND RSI(14) > 70, "Strong Sell", "Hold")`). The legacy shorthand `BB_POSITION(period)` is also accepted for CATEGORICAL and is equivalent to a two-condition template. |
 | KP-08 | KPIs are displayed as toggleable, user-ordered columns in the portfolio table |
-| KP-09 | KPI formulas are validated on save; only supported function names from the indicator library and OHLCV field references (CLOSE, OPEN, HIGH, LOW, VOLUME) are accepted — arbitrary expressions are rejected with a descriptive error |
-| KP-10 | Boolean KPIs use a comparison operator (`>`, `<`, `>=`, `<=`, `==`) applied against a numeric threshold (e.g., `RSI(14) > 70`) |
-| KP-11 | Bollinger Band Position Signal categorical logic: price above upper band or within 5% of band height from above → "Sell Signal"; price below lower band or within 5% of band height from below → "Buy Signal"; otherwise → "Hold" |
+| KP-09 | KPI formulas are validated on save against the indicator whitelist. SCALAR formulas must not contain comparison operators or AND/OR. BOOLEAN formulas require at least one comparison operator; multiple conditions may be chained with `AND` / `OR` (AND binds before OR). CATEGORICAL formulas must be either `BB_POSITION(period)` (legacy) or a nested `IF(condition, "label", ...)` chain; each condition may be a compound AND/OR expression of atomic `expr op expr` comparisons; the final else clause must be a double-quoted string literal. Arbitrary expressions or unknown identifiers are rejected with a descriptive error. |
+| KP-10 | Boolean KPIs support compound conditions using `AND` / `OR`, e.g. `RSI(14) > 70 AND CLOSE > SMA(20)`. Single-condition formulas (e.g. `RSI(14) > 70`) remain valid. AND binds before OR (standard precedence). |
+| KP-11 | The default CATEGORICAL template for a new Bollinger Band signal KPI pre-fills two conditions: `CLOSE >= BB_UPPER(20)` → "Sell Signal" and `CLOSE <= BB_LOWER(20)` → "Buy Signal", with "Hold" as the default. Users can edit the thresholds, labels, operator, and add or remove conditions directly in the KPI Builder condition editor. The conditions are stored as a nested IF chain string in the database. The legacy `BB_POSITION(period)` shorthand (which applies a ±5% band-height tolerance) continues to evaluate correctly for KPIs created before the IF chain editor was introduced. |
 | KP-12 | When P/E or EPS data is unavailable from the fundamental cache, the corresponding KPI column displays "N/A" rather than an error |
 
 ### 7.5 Charts
 | ID | Requirement |
 |----|-------------|
 | CH-01 | Render candlestick, bar, line, and area charts for any instrument and interval |
-| CH-02 | All 100+ TradingView built-in indicators available from within the chart (EMA, RSI, MACD, Bollinger Bands, Ichimoku, Supertrend, etc.); each individually configurable; computed client-side by TradingView — no backend call required |
-| CH-03 | Full drawing toolkit available within the chart: trendlines, horizontal/vertical lines, rectangles, Fibonacci retracement, parallel channels, pitchfork, text annotations, and more — provided by TradingView drawing tools |
-| CH-04 | Drawings are persisted per instrument per interval to the backend database; saved and loaded via TradingView's saveChartToServer / loadChartFromServer hooks calling `/charts/{token}/drawings` |
-| CH-05 | Chart supports zoom, pan, crosshair, OHLCV legend, sub-pane indicators (RSI, MACD, etc.) — all native TradingView Charting Library features |
-| CH-06 | Symbol search within the chart (TradingView built-in symbol search backed by `/instruments/search`) allows switching instruments without leaving the chart view |
-| CH-07 | Chart state (zoom level, visible indicators, layout templates) managed by TradingView's built-in save/template system |
-| CH-08 | A custom JavaScript DataFeed adapter (implementing `IBasicDataFeed`) bridges TradingView to the StockPilot backend: `getBars()` → `/historical/{token}`, `resolveSymbol()` → `/instruments/{token}`, `searchSymbols()` → `/instruments/search` |
-| CH-09 | Right-click context menu extended with "Buy at price" / "Sell at price" actions that pre-fill the order form |
+| CH-02 | 30 standard technical indicators available via an Indicators dropdown; organised into four categories — Trend, Momentum, Volatility, Volume; computed by the backend (pandas-ta) and rendered via Lightweight Charts; overlays are drawn on the price pane, oscillators open in synced sub-panes below; indicators include: MA, EMA, DEMA, TEMA, Hull MA, VWMA, VWAP, Supertrend, Parabolic SAR, ADX/DMI, Aroon, RSI, Stochastic, Stoch RSI, MACD, CCI, ROC, Williams %R, Momentum, Bollinger Bands, Keltner Channel, Donchian Channel, ATR, BB Bandwidth, BB %B, Std Deviation, OBV, MFI, CMF |
+| CH-03 | Basic drawing toolkit: horizontal lines, trendlines, rectangles, and text annotations — persisted per instrument per interval to the backend database; full Fibonacci / pitchfork / channel tools are deferred to a future version |
+| CH-04 | Drawings are persisted per instrument per interval to the backend database via `/charts/{token}/drawings`; loaded on chart open and saved on creation/edit/delete |
+| CH-05 | Chart supports zoom, pan, crosshair, OHLCV legend, and sub-pane indicators (RSI, MACD, etc.) — provided by Lightweight Charts |
+| CH-06 | The chart page has a left sidebar listing the user's held instruments with a live search/filter box; clicking an instrument loads its chart; switching instruments does not require leaving the page |
+| CH-07 | Drawings (horizontal lines, trendlines, rectangles, text annotations) are persisted to the backend database and reloaded on each chart open; indicator selections are session-only (not persisted); zoom and pan state is managed natively by Lightweight Charts but is not saved across sessions |
+| CH-08 | Right-click context menu extended with "Buy at price" / "Sell at price" actions that pre-fill the order form |
 
 ### 7.6 Settings & User Profile
 | ID | Requirement |
@@ -330,14 +332,14 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 | TA Library | `pandas-ta` (no C dependencies, runs on Python DataFrames) |
 | Frontend | React + TypeScript |
 | Frontend State | Zustand (single source of truth for all live + session data) |
-| Charting (primary) | TradingView Charting Library — free for non-commercial use; apply at tradingview.com/charting-library; requires JS DataFeed adapter |
-| Charting (fallback) | TradingView Lightweight Charts (MIT, open source) — used if Charting Library access not granted; indicators computed by backend pandas-ta |
+| Charting | TradingView Lightweight Charts v5 (Apache 2.0, open source) — candlestick / bar / line / area price series; overlays and sub-pane indicator series rendered from backend-computed data |
+| Indicator compute | `pandas-ta` (backend) — 30 indicators across Trend / Momentum / Volatility / Volume categories; results served via `GET /charts/indicators/compute` |
+| Historical data fallback | `yfinance` — used automatically when Kite historical data add-on is not active; transparent to the frontend |
 | Containerization | Docker + Docker Compose |
 
 ### Storage split summary
 - **Backend PostgreSQL:** Auth state (per user), OHLCV cache (global market data), KPI definitions (per user), chart drawings (per user), fundamental cache (global), audit log (per user)
 - **Frontend Zustand store:** Live portfolio data (TTL), KPI computed values (session), OHLCV session cache, indicator series — all in-memory; resets on page refresh
-- **TradingView Charting Library:** Manages chart indicators client-side from OHLCV data; TV manages its own internal state
 - **Frontend localStorage:** User preferences (theme, intervals, column order), chart UI state per instrument
 
 ---
@@ -363,3 +365,4 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 | Data loss | DB backups; WAL mode for SQLite |
 | NSE fundamental data unavailable or stale | Graceful fallback — show "N/A" for P/E and EPS columns; retry on next scheduled refresh |
 | NSE India API changes (unofficial endpoints) | Monitor and update scraper; fundamental data is a soft dependency — app functions without it |
+| Kite historical data add-on not subscribed | Backend automatically falls back to Yahoo Finance (`yfinance`) for OHLCV data; yfinance data is cached identically so future requests are fast; no user action required |

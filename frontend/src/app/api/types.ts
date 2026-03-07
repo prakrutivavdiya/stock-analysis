@@ -354,3 +354,21 @@ export interface InstrumentDetail {
   expiry: string | null;
   strike: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// User Preferences (PD-09)
+// ---------------------------------------------------------------------------
+
+export interface HoldingsSortPreference {
+  column: string;
+  direction: "asc" | "desc";
+}
+
+export interface UIPreferences {
+  visible_holdings_columns: string[];
+  holdings_sort: HoldingsSortPreference;
+}
+
+export interface UIPreferencesResponse {
+  preferences: UIPreferences;
+}
