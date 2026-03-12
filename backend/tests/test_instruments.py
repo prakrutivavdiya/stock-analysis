@@ -60,9 +60,14 @@ _SAMPLE_INSTRUMENTS = {
 
 def _with_cache(instruments: dict):
     """Patch the instruments router's in-memory cache and mark it as loaded."""
+    eq_list = [
+        inst for inst in instruments.values()
+        if inst.get("instrument_type") in ("EQ", "ETF")
+    ]
     return patch.multiple(
         "backend.routers.instruments",
         _instrument_cache=instruments,
+        _instrument_eq_list=eq_list,
         _cache_loaded=True,
     )
 

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class Holding(BaseModel):
     tradingsymbol: str
     exchange: str
+    isin: str
     instrument_token: int
     quantity: int
     t1_quantity: int
@@ -38,6 +39,7 @@ class Position(BaseModel):
     tradingsymbol: str
     exchange: str
     product: str
+    instrument_token: int
     quantity: int
     average_price: float
     last_price: float

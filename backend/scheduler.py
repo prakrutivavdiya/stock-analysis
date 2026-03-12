@@ -3,6 +3,7 @@ APScheduler async jobs — runs inside the FastAPI lifespan.
 
 Schedule (IST — Asia/Kolkata)
 ─────────────────────────────
+  Mon–Fri 08:30  Reload Kite instruments dump into memory
   Mon–Fri 09:20  Fetch D-1 daily OHLCV for all held instruments (warm ohlcv_cache)
   Mon–Fri 09:25  Pre-warm KPI computation: noop (KPIs computed on-demand via API;
                   this job just ensures OHLCV cache is populated first)
@@ -25,6 +26,17 @@ from backend.models import FundamentalCache, OHLCVCache, User
 log = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
 _scheduler = AsyncIOScheduler(timezone=IST)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job: reload instruments dump from Kite
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _job_reload_instruments() -> None:
+    """Reload the full instruments dump from Kite into memory (Mon–Fri 08:30 IST)."""
+    from backend.routers.instruments import _load_instruments
+    log.info("Scheduler: reloading instruments cache")
+    await _load_instruments()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,12 +93,31 @@ async def _job_fetch_d1_ohlcv() -> None:
                 if existing.scalar_one_or_none():
                     continue
 
+                candles = None
                 try:
                     candles = await asyncio.to_thread(
                         kc.historical_data, token, from_dt, to_dt, "day"
                     )
+                    from backend.data_source import set_ohlcv_source
+                    set_ohlcv_source("kite")
                 except Exception as exc:
-                    log.warning("OHLCV fetch failed for token %s: %s", token, exc)
+                    exc_str = str(exc).lower()
+                    if symbol and (
+                        "permission" in exc_str or "403" in exc_str or "subscription" in exc_str
+                    ):
+                        try:
+                            from backend.routers.historical import _fetch_from_yfinance
+                            await _fetch_from_yfinance(
+                                db, token, symbol, exchange, "day", from_dt, to_dt,
+                            )
+                            log.info("Scheduler: yfinance fallback used for %s", symbol)
+                        except Exception as yf_exc:
+                            log.warning("Scheduler: yfinance fallback failed for %s: %s", symbol, yf_exc)
+                    else:
+                        log.warning("OHLCV fetch failed for token %s: %s", token, exc)
+                    continue
+
+                if not candles:
                     continue
 
                 for c in candles:
@@ -191,6 +222,13 @@ def _prev_trading_day() -> date:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def start_scheduler() -> None:
+    _scheduler.add_job(
+        _job_reload_instruments,
+        CronTrigger(hour=8, minute=30, day_of_week="mon-fri", timezone=IST),
+        id="reload_instruments",
+        replace_existing=True,
+        misfire_grace_time=1800,
+    )
     _scheduler.add_job(
         _job_fetch_d1_ohlcv,
         CronTrigger(hour=9, minute=20, day_of_week="mon-fri", timezone=IST),

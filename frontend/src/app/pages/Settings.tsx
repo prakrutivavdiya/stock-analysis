@@ -28,6 +28,8 @@ interface Preferences {
   notifyOnGTTTrigger: boolean;
   // US-094: Kite session expiry warning cannot be permanently suppressed
   notifyOnKiteSessionExpiry: boolean;
+  // TR-17: global paper trade mode
+  paperTradeMode: boolean;
 }
 
 const DEFAULT_PREFS: Preferences = {
@@ -40,6 +42,7 @@ const DEFAULT_PREFS: Preferences = {
   notifyOnOrderRejected: true,
   notifyOnGTTTrigger: true,
   notifyOnKiteSessionExpiry: true,
+  paperTradeMode: false,
 };
 
 // DB-03 fix: read from individual localStorage keys per DATA_MODEL spec
@@ -55,6 +58,7 @@ function loadPrefs(): Preferences {
     notifyOnOrderRejected:    localPrefs.notifyOnOrderRejected.get(),
     notifyOnGTTTrigger:       localPrefs.notifyOnGTTTrigger.get(),
     notifyOnKiteSessionExpiry: true, // AU-05: cannot be suppressed
+    paperTradeMode: localPrefs.paperTradeMode.get(),
   };
 }
 
@@ -115,6 +119,7 @@ export default function Settings() {
     localPrefs.notifyOnOrderRejected.set(prefs.notifyOnOrderRejected);
     localPrefs.notifyOnGTTTrigger.set(prefs.notifyOnGTTTrigger);
     // notifyOnKiteSessionExpiry is always true (AU-05) — no write needed
+    localPrefs.paperTradeMode.set(prefs.paperTradeMode);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -409,6 +414,26 @@ export default function Settings() {
                     onCheckedChange={(v) => updatePref("notifyOnKiteSessionExpiry", v)}
                   />
                 </div>
+              </section>
+
+              {/* TR-17: Trading — global paper trade mode */}
+              <section className="space-y-4">
+                <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                  Trading
+                </h3>
+                <div className="bg-[#121212] border border-[#2a2a2a] rounded-lg divide-y divide-[#2a2a2a]">
+                  <SwitchRow
+                    label="Paper trade mode"
+                    description="When on, all orders are simulated and never sent to Kite. Useful for testing strategies without real money."
+                    checked={prefs.paperTradeMode}
+                    onCheckedChange={(v) => updatePref("paperTradeMode", v)}
+                  />
+                </div>
+                {prefs.paperTradeMode && (
+                  <p className="text-xs text-amber-400">
+                    Paper trade mode is active. All orders will be simulated.
+                  </p>
+                )}
               </section>
 
               <div className="flex items-center gap-3">

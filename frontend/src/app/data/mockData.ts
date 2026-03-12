@@ -3,6 +3,8 @@
 export interface Holding {
   symbol: string;
   exchange: string;
+  isin?: string;              // ISIN for CDSL eDIS authorization (populated from Kite API)
+  instrumentToken?: number;   // undefined in mock data; real token from Kite API
   quantity: number;
   t1Quantity: number; // PRD PD-08: T+1 settlement quantity
   avgPrice: number;
@@ -33,6 +35,7 @@ export interface Position {
   ltp: number;
   unrealisedPnl: number;
   m2mPnl: number;
+  instrumentToken?: number;
 }
 
 export interface Order {
@@ -57,8 +60,10 @@ export interface Order {
 export interface GTTOrder {
   id: string;
   symbol: string;
+  exchange: string;
   type: "single" | "two-leg";
   transaction: "BUY" | "SELL";
+  product: "CNC" | "MIS" | "NRML";
   quantity: number;
   upperTrigger?: number;
   upperLimit?: number;
@@ -365,8 +370,10 @@ export const mockGTTOrders: GTTOrder[] = [
   {
     id: "gtt001",
     symbol: "ABSLAMC",
+    exchange: "NSE",
     type: "two-leg",
     transaction: "SELL",
+    product: "CNC",
     quantity: 20,
     upperTrigger: 510,
     upperLimit: 508,
@@ -377,8 +384,10 @@ export const mockGTTOrders: GTTOrder[] = [
   {
     id: "gtt002",
     symbol: "ASTRAL",
+    exchange: "NSE",
     type: "single",
     transaction: "SELL",
+    product: "CNC",
     quantity: 25,
     singleTrigger: 760,
     singleLimit: 758,

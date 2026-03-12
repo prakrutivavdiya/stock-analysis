@@ -50,6 +50,9 @@ async def _fetch_from_yfinance(
     to_dt: datetime,
 ) -> list[Candle]:
     """Fallback: fetch OHLCV via Yahoo Finance when Kite lacks historical permission."""
+    from backend.data_source import set_ohlcv_source
+    set_ohlcv_source("yfinance")
+
     import yfinance as yf  # imported lazily — not needed for normal flow
 
     suffix = ".NS" if exchange.upper() in ("NSE", "NFO") else ".BO"
@@ -130,10 +133,13 @@ async def _fetch_and_cache(
     to_dt: datetime,
 ) -> list[Candle]:
     """Fetch OHLCV from Kite, write to ohlcv_cache, return candles."""
+    from backend.data_source import set_ohlcv_source
+
     try:
         raw = await asyncio.to_thread(
             kite.historical_data, instrument_token, from_dt, to_dt, interval
         )
+        set_ohlcv_source("kite")
     except Exception as exc:
         exc_str = str(exc).lower()
         if "permission" in exc_str or "403" in exc_str or "subscription" in exc_str:
@@ -243,6 +249,10 @@ async def get_historical(
     )
     cached = cached_rows.scalars().all()
 
+    # Resolve symbol/exchange once (used in both branches)
+    symbol = cached[0].tradingsymbol if cached else (tradingsymbol or str(instrument_token))
+    exch   = cached[0].exchange      if cached else exchange
+
     # Use cache for daily data; use cache for intraday only if market is closed
     if cached and (not is_intraday or market_closed):
         candles = [
@@ -254,11 +264,27 @@ async def get_historical(
             )
             for r in cached
         ]
+
+        # For daily data: if cache doesn't reach to_d, fetch the missing gap from Kite
+        # (e.g. cache stops at Friday, user views on Monday — fetch Mon's candle)
+        if not is_intraday:
+            latest_cached_date = cached[-1].candle_timestamp.date()
+            if latest_cached_date < to_d:
+                gap_from_dt = datetime(
+                    latest_cached_date.year, latest_cached_date.month, latest_cached_date.day,
+                    tzinfo=timezone.utc,
+                ) + timedelta(days=1)
+                try:
+                    new_candles = await _fetch_and_cache(
+                        db, kite, instrument_token, symbol, exch, interval, gap_from_dt, to_dt
+                    )
+                    if new_candles:
+                        candles = candles + new_candles
+                        source = "kite"
+                except Exception:
+                    pass  # keep existing cached candles on gap-fill failure
     else:
         source = "kite"
-        # Resolve tradingsymbol and exchange: cache > query param > fallback
-        symbol = cached[0].tradingsymbol if cached else (tradingsymbol or str(instrument_token))
-        exch = cached[0].exchange if cached else exchange
         candles = await _fetch_and_cache(
             db, kite, instrument_token, symbol, exch, interval, from_dt, to_dt
         )
@@ -291,6 +317,8 @@ async def bulk_historical(
 
     for token in body.instrument_tokens:
         try:
+            from backend.data_source import set_ohlcv_source
+
             cached_q = await db.execute(
                 select(OHLCVCache).where(
                     OHLCVCache.instrument_token == token,
@@ -308,9 +336,40 @@ async def bulk_historical(
                     "volume": row.volume,
                 }
             else:
-                raw = await asyncio.to_thread(
-                    kite.historical_data, token, from_dt, to_dt, body.interval
-                )
+                raw = None
+                try:
+                    raw = await asyncio.to_thread(
+                        kite.historical_data, token, from_dt, to_dt, body.interval
+                    )
+                    set_ohlcv_source("kite")
+                except Exception as kite_exc:
+                    exc_str = str(kite_exc).lower()
+                    if "permission" in exc_str or "403" in exc_str or "subscription" in exc_str:
+                        # Look up tradingsymbol from any existing cache row for this token
+                        sym_q = await db.execute(
+                            select(OHLCVCache).where(OHLCVCache.instrument_token == token).limit(1)
+                        )
+                        sym_row = sym_q.scalar_one_or_none()
+                        if sym_row:
+                            try:
+                                candles = await _fetch_from_yfinance(
+                                    db, token, sym_row.tradingsymbol, sym_row.exchange,
+                                    body.interval, from_dt, to_dt,
+                                )
+                                if candles:
+                                    c = candles[-1]
+                                    results[str(token)] = {
+                                        "open": c.open, "high": c.high,
+                                        "low": c.low, "close": c.close,
+                                        "volume": c.volume,
+                                    }
+                            except Exception:
+                                errors[str(token)] = str(kite_exc)
+                        else:
+                            errors[str(token)] = str(kite_exc)
+                    else:
+                        errors[str(token)] = str(kite_exc)
+
                 if raw:
                     c = raw[-1]
                     results[str(token)] = {
@@ -318,7 +377,6 @@ async def bulk_historical(
                         "low": c["low"], "close": c["close"],
                         "volume": c["volume"],
                     }
-                    # Cache the fetched candle (PRD HD-04)
                     for candle in raw:
                         ts = candle["date"]
                         if isinstance(ts, datetime) and ts.tzinfo is None:

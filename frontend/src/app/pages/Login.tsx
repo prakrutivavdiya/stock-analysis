@@ -85,7 +85,18 @@ export default function Login() {
             )}
           </button>
 
-
+          {/* Dev-only bypass */}
+          {import.meta.env.DEV && (
+            <button
+              onClick={() => {
+                sessionStorage.setItem("devBypass", "true");
+                navigate("/dashboard");
+              }}
+              className="w-full py-2 text-xs text-muted-foreground hover:text-foreground border border-dashed border-[#2a2a2a] hover:border-[#FF6600]/40 rounded transition-colors"
+            >
+              Skip login (dev only)
+            </button>
+          )}
         </div>
 
         <p className="text-xs text-center text-muted-foreground">

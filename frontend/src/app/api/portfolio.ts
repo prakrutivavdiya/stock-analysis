@@ -33,6 +33,8 @@ export function mapHolding(h: ApiHolding): Holding {
   return {
     symbol: h.tradingsymbol,
     exchange: h.exchange,
+    isin: h.isin,
+    instrumentToken: h.instrument_token,
     quantity: h.quantity,
     t1Quantity: h.t1_quantity,
     avgPrice: h.average_price,
@@ -52,6 +54,7 @@ export function mapPosition(p: ApiPosition): Position {
     symbol: p.tradingsymbol,
     exchange: p.exchange,
     product: p.product,
+    instrumentToken: p.instrument_token,
     quantity: p.quantity,
     avgPrice: p.average_price,
     ltp: p.last_price,

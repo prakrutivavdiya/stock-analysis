@@ -13,7 +13,9 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+import httpx
+from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import settings
@@ -31,6 +33,15 @@ from backend.schemas.orders import (
 )
 
 router = APIRouter()
+
+# Keywords that indicate a CDSL/eDIS authorization is required for delivery sells.
+_CDSL_KEYWORDS = ("cdsl", "edis", "tpin", "cdp pin", "authoris", "authoriz")
+
+
+def _is_cdsl_error(message: str) -> bool:
+    """Return True when a Kite exception looks like a CDSL authorization error."""
+    lower = message.lower()
+    return any(kw in lower for kw in _CDSL_KEYWORDS)
 
 
 def _parse_kite_order(o: dict) -> OrderOut:
@@ -118,9 +129,12 @@ async def place_order(
         except Exception as exc:
             outcome = "FAILURE"
             error_message = str(exc)
-            if "InputException" in type(exc).__name__ or "DataException" in type(exc).__name__:
-                # Kite rejected the order — 422
-                pass
+
+    cdsl_required = (
+        outcome == "FAILURE"
+        and not is_paper
+        and _is_cdsl_error(error_message or "")
+    )
 
     audit = AuditLog(
         user_id=current_user.id,
@@ -136,6 +150,21 @@ async def place_order(
     await db.commit()
 
     if outcome == "FAILURE" and not is_paper:
+        if cdsl_required:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": {
+                        "code": "CDSL_AUTH_REQUIRED",
+                        "message": "CDSL/eDIS authorization is required to sell delivery holdings. "
+                                   "Please authorize via the CDSL portal and retry.",
+                        "tradingsymbol": body.tradingsymbol,
+                        "exchange": body.exchange,
+                        "qty": body.quantity,
+                        "request_id": str(audit.id),
+                    }
+                },
+            )
         raise HTTPException(
             status_code=422,
             detail={
@@ -249,3 +278,134 @@ async def order_history(
         raise HTTPException(status_code=502, detail=f"Kite API error: {exc}") from exc
 
     return OrderHistoryResponse(order_id=order_id, history=history)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CDSL / eDIS authorization helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/cdsl/form")
+async def cdsl_form(
+    current_user: CurrentUser,
+    isin: str = Query(..., description="ISIN of the security to authorize"),
+    qty: int = Query(..., gt=0, description="Quantity to authorize"),
+    exchange: str = Query(..., description="Exchange (NSE or BSE)"),
+) -> Response:
+    """
+    Server-side eDIS TPIN form proxy.
+
+    Flow:
+      1. Browser opens this endpoint in a new tab (session cookie is included).
+      2. Backend decrypts the user's Kite access token and calls
+         POST https://api.kite.trade/tpin/generate.
+      3. Kite returns the CDSL authorization HTML form.
+      4. We serve that HTML directly — the browser auto-submits the form to CDSL.
+      5. CDSL redirects back to redirect_uri (our frontend /orders?cdsl_status=completed).
+      6. Frontend detects the callback param and shows a retry button.
+
+    On any Kite-side error we fall back to a manual redirect to the Kite
+    portfolio page with instructions.
+    """
+    from backend.config import settings
+    from backend.crypto import decrypt_token
+
+    # If KITE_API_KEY is not configured the Authorization header would be malformed
+    # and Kite returns "Route not found". Skip the API call and go straight to fallback.
+    if not settings.KITE_API_KEY:
+        return _cdsl_fallback_html(
+            "Kite API key not configured on this server. "
+            "Please authorize manually via Kite Web."
+        )
+
+    redirect_uri = f"{settings.FRONTEND_URL}/orders?cdsl_status=completed"
+
+    try:
+        kite_token = decrypt_token(current_user.kite_access_token_enc, settings.KITE_ENCRYPTION_KEY)
+    except Exception:
+        return _cdsl_fallback_html("Could not decrypt Kite session. Please re-login.")
+
+    headers = {
+        "X-Kite-Version": "3",
+        "Authorization": f"token {settings.KITE_API_KEY}:{kite_token}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    payload = {
+        "isin": isin,
+        "qty": str(qty),
+        "exchange": exchange,
+        "segment": "equity",   # Kite expects "equity", not the exchange name
+        "bulk": "1",
+        "redirect_uri": redirect_uri,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                "https://api.kite.trade/tpin/generate",
+                headers=headers,
+                data=payload,
+            )
+        if resp.status_code == 200:
+            body = resp.json()
+            if body.get("status") == "ok":
+                form_html: str = (body.get("data") or {}).get("edisFormHtml", "")
+                if form_html:
+                    return HTMLResponse(content=form_html)
+        # Kite returned an error — translate "Route not found" into actionable message
+        try:
+            error_msg = resp.json().get("message", f"Kite API error (HTTP {resp.status_code})")
+        except Exception:
+            error_msg = f"Kite API error (HTTP {resp.status_code})"
+        if "route not found" in error_msg.lower():
+            error_msg = (
+                "CDSL form not available via API — your Kite Connect subscription "
+                "may not include eDIS access. Please authorize manually via Kite Web."
+            )
+        return _cdsl_fallback_html(error_msg)
+    except httpx.TimeoutException:
+        return _cdsl_fallback_html("Kite API timed out. Please try again.")
+    except Exception as exc:
+        return _cdsl_fallback_html(str(exc))
+
+
+def _cdsl_fallback_html(reason: str) -> HTMLResponse:
+    """
+    Fallback page shown when we cannot auto-generate the CDSL form.
+    Redirects the user to Kite Web where they can authorize manually.
+    """
+    safe_reason = reason.replace("<", "&lt;").replace(">", "&gt;")
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CDSL Authorization</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5;
+           display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
+    .card {{ background: #121212; border: 1px solid #2a2a2a; border-radius: 8px;
+             padding: 32px; max-width: 480px; width: 100%; }}
+    h2 {{ color: #ff6600; margin: 0 0 12px; }}
+    p  {{ color: #999; font-size: 14px; line-height: 1.6; margin: 0 0 8px; }}
+    .reason {{ color: #f87171; font-size: 12px; font-family: monospace;
+               background: #1a0a0a; border: 1px solid #3a1a1a; border-radius: 4px;
+               padding: 8px 12px; margin: 12px 0; }}
+    a.btn {{ display: inline-block; background: #ff6600; color: white; padding: 10px 20px;
+             border-radius: 6px; text-decoration: none; font-size: 14px; font-weight: 600;
+             margin-top: 16px; }}
+    a.btn:hover {{ background: #ff7700; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>CDSL Authorization Required</h2>
+    <p>Automatic CDSL form generation failed. Please complete authorization manually on Kite Web.</p>
+    <div class="reason">{safe_reason}</div>
+    <p>After authorizing, return to StockPilot and retry your sell order.</p>
+    <a class="btn" href="https://kite.zerodha.com/portfolio/holdings" target="_blank" rel="noopener noreferrer">
+      Open Kite Web &rarr;
+    </a>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=200)

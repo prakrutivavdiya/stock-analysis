@@ -295,6 +295,16 @@ def _compute_indicators(
     values["WEEK_52_HIGH"] = f.get("week_52_high")
     values["WEEK_52_LOW"] = f.get("week_52_low")
 
+    # OHLCV fallback for 52W High/Low when fundamental cache is absent
+    if values["WEEK_52_HIGH"] is None and not df.empty:
+        h_val = df["high"].tail(252).max()
+        if pd.notna(h_val) and h_val > 0:
+            values["WEEK_52_HIGH"] = float(h_val)
+    if values["WEEK_52_LOW"] is None and not df.empty:
+        l_val = df["low"].tail(252).min()
+        if pd.notna(l_val) and l_val > 0:
+            values["WEEK_52_LOW"] = float(l_val)
+
     # Derived 52-week % deviations
     w52h = values["WEEK_52_HIGH"]
     w52l = values["WEEK_52_LOW"]

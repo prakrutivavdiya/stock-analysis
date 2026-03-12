@@ -57,13 +57,24 @@ let mockHoldingsData = [
   { symbol: 'HDFCBANK', exchange: 'NSE' },
 ]
 
-vi.mock('../../app/data/store', () => ({
-  useAppStore: vi.fn((selector: (s: object) => unknown) =>
-    selector({
+vi.mock('../../app/data/store', () => {
+  const useAppStore: any = vi.fn((selector?: (s: object) => unknown) => {
+    const state = {
       holdings: { data: mockHoldingsData, fetchedAt: Date.now() },
-    })
-  ),
-}))
+      livePrices: {},
+      setLivePrices: vi.fn(),
+      setOhlcv: vi.fn(),
+      getOhlcv: vi.fn(() => undefined),
+      setIndicatorSeries: vi.fn(),
+      getIndicatorSeries: vi.fn(() => undefined),
+      clearIndicatorValues: vi.fn(),
+    }
+    return selector ? selector(state) : state
+  })
+  // Zustand static method used in Charts for live tick subscriptions
+  useAppStore.subscribe = vi.fn(() => () => {})
+  return { useAppStore }
+})
 
 // Mock ResizeObserver
 global.ResizeObserver = class {
@@ -208,7 +219,7 @@ describe('Charts — CH-02: indicators dropdown', () => {
     expect(screen.getByText('Trend')).toBeInTheDocument()
     expect(screen.getByText('Momentum')).toBeInTheDocument()
     expect(screen.getByText('Volatility')).toBeInTheDocument()
-    expect(screen.getByText('Volume')).toBeInTheDocument()
+    expect(screen.getAllByText('Volume').length).toBeGreaterThan(0)
   })
 
   it('panel shows Overlay and Indicator badges', async () => {
@@ -295,5 +306,138 @@ describe('Charts — toolbar', () => {
   it('shows instrument label in toolbar', () => {
     renderCharts()
     expect(screen.getByText('NSE:INFY')).toBeInTheDocument()
+  })
+})
+
+// ── IND-PARAMS: Indicator period selector ─────────────────────────────────────
+
+describe('Charts — IND-PARAMS: indicator period selector', () => {
+  async function openIndicatorsAndAdd(label: string) {
+    const btns = screen.getAllByRole('button')
+    const indBtn = btns.find((b) => b.textContent?.includes('Indicators'))!
+    await userEvent.click(indBtn)
+    await userEvent.click(screen.getByText(label))
+    // close panel by clicking elsewhere
+    await userEvent.keyboard('{Escape}')
+  }
+
+  it('active RSI badge shows period in parentheses', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('RSI (14)')
+    expect(screen.getByTestId('period-btn-RSI_14')).toBeInTheDocument()
+    expect(screen.getByTestId('period-btn-RSI_14').textContent).toContain('14')
+  })
+
+  it('clicking period opens an inline input with current value', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('RSI (14)')
+    const periodBtn = screen.getByTestId('period-btn-RSI_14')
+    await userEvent.click(periodBtn)
+    expect(screen.getByTestId('period-input-RSI_14')).toBeInTheDocument()
+    expect((screen.getByTestId('period-input-RSI_14') as HTMLInputElement).value).toBe('14')
+  })
+
+  it('typing a new period and pressing Enter updates the badge', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('RSI (14)')
+    await userEvent.click(screen.getByTestId('period-btn-RSI_14'))
+    const input = screen.getByTestId('period-input-RSI_14')
+    await userEvent.clear(input)
+    await userEvent.type(input, '9')
+    await userEvent.keyboard('{Enter}')
+    // Input gone, badge now shows (9)
+    expect(screen.queryByTestId('period-input-RSI_14')).not.toBeInTheDocument()
+    // After update key changes to RSI_9
+    expect(screen.getByTestId('period-btn-RSI_9')).toBeInTheDocument()
+    expect(screen.getByTestId('period-btn-RSI_9').textContent).toContain('9')
+  })
+
+  it('pressing Escape on the period input cancels without changing period', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('RSI (14)')
+    await userEvent.click(screen.getByTestId('period-btn-RSI_14'))
+    const input = screen.getByTestId('period-input-RSI_14')
+    await userEvent.clear(input)
+    await userEvent.type(input, '99')
+    await userEvent.keyboard('{Escape}')
+    // Input dismissed, period unchanged (RSI_14 badge still present)
+    expect(screen.getByTestId('period-btn-RSI_14')).toBeInTheDocument()
+  })
+
+  it('MACD badge (no period) does not show period button', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('MACD')
+    // MACD key has no _N — period-btn should not be present
+    expect(screen.queryByTestId('period-btn-MACD')).not.toBeInTheDocument()
+  })
+
+  it('BB period editing: BB_20 → BB_10 works', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('Bollinger Bands (20)')
+    await userEvent.click(screen.getByTestId('period-btn-BB_20'))
+    const input = screen.getByTestId('period-input-BB_20')
+    await userEvent.clear(input)
+    await userEvent.type(input, '10')
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByTestId('period-btn-BB_10')).toBeInTheDocument()
+  })
+
+  it('removing an indicator via × removes the badge', async () => {
+    renderCharts()
+    await openIndicatorsAndAdd('RSI (14)')
+    // find × button in the badge
+    const badge = screen.getByTestId('period-btn-RSI_14').closest('span')!
+    const removeBtn = badge.querySelector('button:last-child')!
+    await userEvent.click(removeBtn)
+    expect(screen.queryByTestId('period-btn-RSI_14')).not.toBeInTheDocument()
+  })
+})
+
+// ── Volume indicator ──────────────────────────────────────────────────────────
+
+describe('Charts — Volume indicator', () => {
+  async function openIndicators() {
+    const btns = screen.getAllByRole('button')
+    const indBtn = btns.find((b) => b.textContent?.includes('Indicators'))!
+    await userEvent.click(indBtn)
+  }
+
+  /** Find the Volume indicator item span (not the category header <p>) */
+  function findVolumeSpan() {
+    return screen.getAllByText('Volume').find(
+      (el) => el.tagName.toLowerCase() === 'span'
+    )!
+  }
+
+  it('"Volume" appears in the indicator catalog under the Volume category', async () => {
+    renderCharts()
+    await openIndicators()
+    // Both the category header and the indicator item have text "Volume"
+    expect(screen.getAllByText('Volume').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('clicking Volume adds it to the active indicators (count badge increments)', async () => {
+    renderCharts()
+    await openIndicators()
+    await userEvent.click(findVolumeSpan())
+    const updatedIndBtn = screen.getAllByRole('button').find((b) => b.textContent?.includes('Indicators'))
+    expect(updatedIndBtn?.textContent).toContain('1')
+  })
+
+  it('Volume indicator has no period button (no _N suffix)', async () => {
+    renderCharts()
+    await openIndicators()
+    await userEvent.click(findVolumeSpan())
+    await userEvent.keyboard('{Escape}')
+    // VOLUME key has no period — period-btn should not be present
+    expect(screen.queryByTestId('period-btn-VOLUME')).not.toBeInTheDocument()
+  })
+
+  it('Volume is listed under the Volume category in the indicator panel', async () => {
+    renderCharts()
+    await openIndicators()
+    // The Volume indicator item label is a <span> inside a button
+    const volSpan = findVolumeSpan()
+    expect(volSpan).toBeInTheDocument()
   })
 })

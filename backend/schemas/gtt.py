@@ -8,12 +8,20 @@ from pydantic import BaseModel
 class GTTOut(BaseModel):
     trigger_id: int
     tradingsymbol: str
+    exchange: str
     trigger_type: str
-    trigger_value: float | None
-    limit_price: float | None
-    quantity: int | None
     transaction_type: str
+    product: str
+    quantity: int | None
     status: str
+    # single-leg
+    trigger_value: float | None = None
+    limit_price: float | None = None
+    # two-leg
+    upper_trigger_value: float | None = None
+    upper_limit_price: float | None = None
+    lower_trigger_value: float | None = None
+    lower_limit_price: float | None = None
 
 
 class GTTsResponse(BaseModel):

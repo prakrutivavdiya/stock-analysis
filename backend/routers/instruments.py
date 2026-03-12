@@ -1,12 +1,12 @@
 """
 Instruments router — 2 endpoints
 
-  GET /instruments/search?q=<query>&exchange=<NSE|BSE>  → fuzzy search
+  GET /instruments/search?q=<query>&exchange=<NSE|BSE>  → substring search
   GET /instruments/{instrument_token}                    → instrument detail
 
-Instruments are loaded from the Kite instruments CSV dump at startup and kept
-in memory in _instrument_cache.  The dump is exchange-level data (same for all
-users) so we use a KiteConnect instance initialized with just the API key.
+Instruments are loaded from the Kite instruments CSV dump at startup (and
+reloaded daily at 08:30 IST by the scheduler) and kept in memory.
+_instrument_eq_list holds only EQ/ETF rows for fast search iteration.
 """
 from __future__ import annotations
 
@@ -24,22 +24,31 @@ from backend.schemas.instruments import InstrumentDetail, InstrumentResult, Inst
 log = logging.getLogger(__name__)
 router = APIRouter()
 
-# In-memory instruments store: instrument_token → dict
+# In-memory store: instrument_token → raw dict (all types)
 _instrument_cache: dict[int, dict[str, Any]] = {}
+# Pre-filtered list of EQ/ETF instruments for fast search iteration
+_instrument_eq_list: list[dict[str, Any]] = []
 _cache_loaded = False
 
 
 async def _load_instruments() -> None:
-    """Download the instruments dump from Kite and populate _instrument_cache."""
-    global _cache_loaded
+    """Download the instruments dump from Kite and populate the in-memory caches."""
+    global _cache_loaded, _instrument_eq_list
     kc = KiteConnect(api_key=settings.KITE_API_KEY)
     try:
         instruments = await asyncio.to_thread(kc.instruments)
         _instrument_cache.clear()
+        eq_list: list[dict[str, Any]] = []
         for inst in instruments:
             _instrument_cache[inst["instrument_token"]] = inst
+            if inst.get("instrument_type") in ("EQ", "ETF"):
+                eq_list.append(inst)
+        _instrument_eq_list = eq_list
         _cache_loaded = True
-        log.info("Instruments cache loaded: %d instruments", len(_instrument_cache))
+        log.info(
+            "Instruments cache loaded: %d total, %d EQ/ETF",
+            len(_instrument_cache), len(_instrument_eq_list),
+        )
     except Exception as exc:
         log.warning("Failed to load instruments from Kite: %s", exc)
 
@@ -52,39 +61,62 @@ async def ensure_instruments_loaded() -> None:
 @router.get("/search", response_model=InstrumentSearchResponse)
 async def search_instruments(
     _user: CurrentUser,
-    q: str = Query(..., min_length=1, description="Symbol or company name query"),
+    q: str = Query(..., min_length=1, description="Symbol or company name query (substring)"),
     exchange: str | None = Query(default=None, description="NSE or BSE"),
 ) -> InstrumentSearchResponse:
-    """Search instruments by trading symbol or company name (case-insensitive)."""
+    """
+    Search EQ/ETF instruments by trading symbol or company name.
+
+    Substring matching — even partial strings return results.
+    Ranked by relevance: exact symbol > starts-with symbol > starts-with name
+    > contains symbol > contains name.
+    Returns up to 20 results.
+    """
     await ensure_instruments_loaded()
 
-    q_lower = q.lower()
-    results: list[InstrumentResult] = []
+    q_lower = q.strip().lower()
+    exch_upper = exchange.upper() if exchange else None
 
-    for inst in _instrument_cache.values():
-        if inst.get("instrument_type") not in ("EQ", "ETF"):
-            continue
-        if exchange and inst.get("exchange") != exchange.upper():
+    # Collect (score, tradingsymbol, instrument) for all matches
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
+
+    for inst in _instrument_eq_list:
+        if exch_upper and inst.get("exchange") != exch_upper:
             continue
 
         symbol: str = inst.get("tradingsymbol", "")
         name: str = inst.get("name", "")
+        sym_lower = symbol.lower()
+        name_lower = name.lower()
 
-        if q_lower in symbol.lower() or q_lower in name.lower():
-            results.append(InstrumentResult(
-                instrument_token=inst["instrument_token"],
-                tradingsymbol=symbol,
-                name=name,
-                exchange=inst.get("exchange", ""),
-                instrument_type=inst.get("instrument_type", ""),
-            ))
+        if q_lower == sym_lower:
+            score = 0
+        elif sym_lower.startswith(q_lower):
+            score = 1
+        elif name_lower.startswith(q_lower):
+            score = 2
+        elif q_lower in sym_lower:
+            score = 3
+        elif q_lower in name_lower:
+            score = 4
+        else:
+            continue
 
-        if len(results) >= 20:
-            break
+        ranked.append((score, symbol, inst))
 
-    # Sort: exact symbol match first
-    results.sort(key=lambda r: (r.tradingsymbol.lower() != q_lower, r.tradingsymbol))
-    return InstrumentSearchResponse(results=results[:20])
+    # Sort by relevance score, then alphabetically by symbol
+    ranked.sort(key=lambda x: (x[0], x[1]))
+
+    return InstrumentSearchResponse(results=[
+        InstrumentResult(
+            instrument_token=inst["instrument_token"],
+            tradingsymbol=inst.get("tradingsymbol", ""),
+            name=inst.get("name", ""),
+            exchange=inst.get("exchange", ""),
+            instrument_type=inst.get("instrument_type", ""),
+        )
+        for _, _, inst in ranked[:20]
+    ])
 
 
 @router.get("/{instrument_token}", response_model=InstrumentDetail)

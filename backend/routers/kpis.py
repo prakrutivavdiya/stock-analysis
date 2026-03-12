@@ -36,6 +36,68 @@ from backend.schemas.kpis import (
 
 router = APIRouter()
 
+
+async def _load_fundamental(
+    db: DBSession,
+    token: int,
+    tradingsymbol: str = "",
+    exchange: str = "NSE",
+) -> dict[str, Any] | None:
+    """Return fundamental data dict from cache, falling back to Yahoo Finance if absent."""
+    from datetime import date as _date
+
+    fund_row = (await db.execute(
+        select(FundamentalCache).where(FundamentalCache.instrument_token == token)
+    )).scalar_one_or_none()
+
+    if fund_row is None and tradingsymbol:
+        try:
+            import yfinance as yf
+            suffix = ".BO" if exchange.upper() == "BSE" else ".NS"
+            info = await asyncio.to_thread(
+                lambda: yf.Ticker(f"{tradingsymbol}{suffix}").info
+            )
+            pe = info.get("trailingPE")
+            eps = info.get("trailingEps")
+            w52h = info.get("fiftyTwoWeekHigh")
+            w52l = info.get("fiftyTwoWeekLow")
+            bv = info.get("bookValue")
+            if any(v is not None for v in [pe, eps, w52h, w52l]):
+                row = FundamentalCache(
+                    instrument_token=token,
+                    tradingsymbol=tradingsymbol,
+                    exchange=exchange,
+                    pe_ratio=float(pe) if pe else None,
+                    eps=float(eps) if eps else None,
+                    book_value=float(bv) if bv else None,
+                    face_value=None,
+                    week_52_high=float(w52h) if w52h else None,
+                    week_52_low=float(w52l) if w52l else None,
+                    data_date=_date.today(),
+                )
+                db.add(row)
+                try:
+                    await db.commit()
+                    await db.refresh(row)
+                    fund_row = row
+                except Exception:
+                    await db.rollback()
+        except Exception:
+            pass
+
+    if fund_row is None:
+        return None
+
+    return {
+        "pe_ratio": float(fund_row.pe_ratio) if fund_row.pe_ratio else None,
+        "eps": float(fund_row.eps) if fund_row.eps else None,
+        "book_value": float(fund_row.book_value) if fund_row.book_value else None,
+        "face_value": float(fund_row.face_value) if fund_row.face_value else None,
+        "week_52_high": float(fund_row.week_52_high) if fund_row.week_52_high else None,
+        "week_52_low": float(fund_row.week_52_low) if fund_row.week_52_low else None,
+    }
+
+
 # NSE market hours in UTC minutes from midnight
 # 09:15 IST = 03:45 UTC → 3*60+45 = 225 minutes
 # 15:30 IST = 10:00 UTC → 10*60+0  = 600 minutes
@@ -58,17 +120,19 @@ async def _load_ohlcv_df(
     as_of_date: date,
     interval: str,
     using_live: bool,
+    tradingsymbol: str = "",
+    exchange: str = "NSE",
 ) -> pd.DataFrame:
     """
     Build an OHLCV DataFrame for the given instrument up to as_of_date.
-    Uses the ohlcv_cache; fetches from Kite if not present.
+    Cache-first; on cache miss tries Kite historical API, then falls back to
+    Yahoo Finance (same pattern as historical.py) if Kite denies permission.
     """
     # Need enough candles for slow indicators (e.g. SMA(200) needs 200+ trading days)
     lookback_days = 300 if interval == "day" else 60
     as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, tzinfo=timezone.utc)
     from_dt = as_of_dt - pd.Timedelta(days=lookback_days)
     to_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=timezone.utc)
-
 
     rows = (await db.execute(
         select(OHLCVCache)
@@ -81,38 +145,81 @@ async def _load_ohlcv_df(
         .order_by(OHLCVCache.candle_timestamp)
     )).scalars().all()
 
-    # Track tradingsymbol for LTP patching (only available when loading from cache)
+    # Track tradingsymbol for LTP patching (resolved from cache or caller)
     cached_tradingsymbol: str | None = None
 
     if not rows:
+        # ── Try Kite historical API ───────────────────────────────────────────
+        raw_kite: list | None = None
         try:
-            raw = await asyncio.to_thread(kite.historical_data, instrument_token, from_dt, to_dt, interval)
-            df = pd.DataFrame(raw)
-            if not df.empty:
-                df.rename(columns={"date": "timestamp"}, inplace=True)
-                # Cache the fetched rows (tradingsymbol unknown at this point; use token as placeholder)
-                symbol = str(instrument_token)
-                exchange = "NSE"
-                for _, c in df.iterrows():
-                    ts = c["timestamp"]
-                    if hasattr(ts, "tzinfo") and ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    db.add(OHLCVCache(
-                        instrument_token=instrument_token, tradingsymbol=symbol,
-                        exchange=exchange, interval=interval,
-                        candle_timestamp=ts,
-                        open=c["open"], high=c["high"], low=c["low"],
-                        close=c["close"], volume=c["volume"],
-                    ))
+            raw_kite = await asyncio.to_thread(
+                kite.historical_data, instrument_token, from_dt, to_dt, interval
+            )
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if tradingsymbol and (
+                "permission" in exc_str or "403" in exc_str or "subscription" in exc_str
+            ):
+                # Kite add-on not active — fall back to Yahoo Finance
                 try:
-                    await db.commit()
+                    from backend.routers.historical import _fetch_from_yfinance
+                    await _fetch_from_yfinance(
+                        db, instrument_token, tradingsymbol, exchange,
+                        interval, from_dt, to_dt,
+                    )
+                    # Re-query the cache now populated by yfinance
+                    rows = (await db.execute(
+                        select(OHLCVCache)
+                        .where(
+                            OHLCVCache.instrument_token == instrument_token,
+                            OHLCVCache.interval == interval,
+                            OHLCVCache.candle_timestamp >= from_dt,
+                            OHLCVCache.candle_timestamp <= to_dt,
+                        )
+                        .order_by(OHLCVCache.candle_timestamp)
+                    )).scalars().all()
                 except Exception:
-                    await db.rollback()
-                # Data was just fetched live from Kite; no LTP patch needed
-                using_live = False
-            else:
+                    pass
+            # Any other Kite error: rows stays empty, df will be empty below
+
+        if raw_kite:
+            from backend.data_source import set_ohlcv_source
+            set_ohlcv_source("kite")
+            symbol = tradingsymbol or str(instrument_token)
+            cached_tradingsymbol = symbol
+            for c in raw_kite:
+                ts = c["date"]
+                if isinstance(ts, datetime) and ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                db.add(OHLCVCache(
+                    instrument_token=instrument_token, tradingsymbol=symbol,
+                    exchange=exchange, interval=interval,
+                    candle_timestamp=ts,
+                    open=c["open"], high=c["high"], low=c["low"],
+                    close=c["close"], volume=c["volume"],
+                ))
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
+            using_live = False  # just fetched from Kite; no LTP patch needed
+            df = pd.DataFrame([
+                {"timestamp": c["date"], "open": c["open"], "high": c["high"],
+                 "low": c["low"], "close": c["close"], "volume": c["volume"]}
+                for c in raw_kite
+            ])
+            if df.empty:
                 return pd.DataFrame()
-        except Exception:
+        elif rows:
+            # Populated by yfinance fallback above
+            cached_tradingsymbol = rows[0].tradingsymbol
+            df = pd.DataFrame([
+                {"timestamp": r.candle_timestamp, "open": float(r.open),
+                 "high": float(r.high), "low": float(r.low),
+                 "close": float(r.close), "volume": r.volume}
+                for r in rows
+            ])
+        else:
             return pd.DataFrame()
     else:
         cached_tradingsymbol = rows[0].tradingsymbol
@@ -242,17 +349,7 @@ async def compute_kpi(
     for token in body.instrument_tokens:
         df = await _load_ohlcv_df(db, kite, token, as_of, body.interval, using_live)
 
-        fund_row = (await db.execute(
-            select(FundamentalCache).where(FundamentalCache.instrument_token == token)
-        )).scalar_one_or_none()
-        fundamental = {
-            "pe_ratio": float(fund_row.pe_ratio) if fund_row and fund_row.pe_ratio else None,
-            "eps": float(fund_row.eps) if fund_row and fund_row.eps else None,
-            "book_value": float(fund_row.book_value) if fund_row and fund_row.book_value else None,
-            "face_value": float(fund_row.face_value) if fund_row and fund_row.face_value else None,
-            "week_52_high": float(fund_row.week_52_high) if fund_row and fund_row.week_52_high else None,
-            "week_52_low": float(fund_row.week_52_low) if fund_row and fund_row.week_52_low else None,
-        } if fund_row else None
+        fundamental = await _load_fundamental(db, token)
 
         value = evaluate_formula(kpi.formula, df, fundamental, kpi.return_type)
         results[str(token)] = KPIComputeResult(value=value, return_type=kpi.return_type)
@@ -313,19 +410,12 @@ async def portfolio_kpis(
         if not token:
             continue
 
-        df = await _load_ohlcv_df(db, kite, token, d1, "day", using_live)
+        df = await _load_ohlcv_df(
+            db, kite, token, d1, "day", using_live,
+            tradingsymbol=symbol, exchange=h.get("exchange", "NSE"),
+        )
 
-        fund_row = (await db.execute(
-            select(FundamentalCache).where(FundamentalCache.instrument_token == token)
-        )).scalar_one_or_none()
-        fundamental: dict[str, Any] | None = {
-            "pe_ratio": float(fund_row.pe_ratio) if fund_row and fund_row.pe_ratio else None,
-            "eps": float(fund_row.eps) if fund_row and fund_row.eps else None,
-            "book_value": float(fund_row.book_value) if fund_row and fund_row.book_value else None,
-            "face_value": float(fund_row.face_value) if fund_row and fund_row.face_value else None,
-            "week_52_high": float(fund_row.week_52_high) if fund_row and fund_row.week_52_high else None,
-            "week_52_low": float(fund_row.week_52_low) if fund_row and fund_row.week_52_low else None,
-        } if fund_row else None
+        fundamental = await _load_fundamental(db, token, symbol, h.get("exchange", "NSE"))
 
         kpi_values: dict[str, dict[str, Any]] = {}
 

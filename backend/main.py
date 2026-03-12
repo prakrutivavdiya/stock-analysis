@@ -34,6 +34,8 @@ from backend.routers import (
     portfolio,
     preferences,
     system,
+    watchlist,
+    ws,
 )
 from backend.scheduler import shutdown_scheduler, start_scheduler
 
@@ -80,10 +82,48 @@ async def lifespan(app: FastAPI):
     # Start APScheduler
     await start_scheduler()
 
+    # Start KiteTicker for live market data
+    try:
+        import asyncio as _asyncio
+        from sqlalchemy import select as _select
+        from kiteconnect import KiteConnect as _KiteConnect
+        from backend.models import User as _User
+        from backend.ticker import start_ticker
+        from backend.crypto import decrypt_token as _decrypt
+
+        async with __import__("backend.database", fromlist=["AsyncSessionLocal"]).AsyncSessionLocal() as _db:
+            from datetime import datetime as _dt
+            _now = _dt.utcnow()  # naive UTC matches stored format
+            _user = (await _db.execute(
+                _select(_User).where(
+                    _User.is_active == True,           # noqa: E712
+                    _User.kite_token_expires_at > _now,
+                ).limit(1)
+            )).scalar_one_or_none()
+            if _user:
+                _token = _decrypt(_user.kite_access_token_enc, settings.KITE_ENCRYPTION_KEY)
+                _kc = _KiteConnect(api_key=settings.KITE_API_KEY)
+                _kc.set_access_token(_token)
+                _holdings = await _asyncio.to_thread(_kc.holdings)
+                _tokens = list({h["instrument_token"] for h in _holdings if h.get("instrument_token")})
+                # Also subscribe watchlist tokens
+                from backend.models import WatchlistItem as _WLItem
+                _wl_tokens = (await _db.execute(
+                    _select(_WLItem.instrument_token).where(_WLItem.user_id == _user.id)
+                )).scalars().all()
+                _tokens = list(set(_tokens) | set(_wl_tokens))
+                await start_ticker(_tokens, settings.KITE_API_KEY, _token)
+            else:
+                log.info("No active Kite session found — KiteTicker not started")
+    except Exception as _exc:
+        log.warning("KiteTicker startup skipped: %s", _exc)
+
     yield
 
     # Shutdown
     await shutdown_scheduler()
+    from backend.ticker import stop_ticker
+    await stop_ticker()
     log.info("StockPilot backend shut down")
 
 
@@ -168,3 +208,5 @@ app.include_router(orders.router,       prefix=f"{_V1}/orders",        tags=["or
 app.include_router(gtt.router,          prefix=f"{_V1}/gtt",           tags=["gtt"])
 app.include_router(audit.router,        prefix=f"{_V1}/audit",         tags=["audit"])
 app.include_router(preferences.router,  prefix=f"{_V1}/user/preferences", tags=["preferences"])
+app.include_router(watchlist.router,    prefix=f"{_V1}/watchlist",         tags=["watchlist"])
+app.include_router(ws.router,           tags=["ws"])  # /ws/quotes — no /api/v1 prefix

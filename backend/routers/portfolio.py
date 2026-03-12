@@ -59,6 +59,7 @@ async def get_holdings(kite: KiteClient) -> HoldingsResponse:
         holdings.append(Holding(
             tradingsymbol=h.get("tradingsymbol", ""),
             exchange=h.get("exchange", ""),
+            isin=h.get("isin", ""),
             instrument_token=h.get("instrument_token", 0),
             quantity=qty,
             t1_quantity=h.get("t1_quantity", 0),
@@ -112,6 +113,7 @@ async def get_positions(kite: KiteClient) -> PositionsResponse:
             tradingsymbol=p.get("tradingsymbol", ""),
             exchange=p.get("exchange", ""),
             product=p.get("product", ""),
+            instrument_token=p.get("instrument_token", 0),
             quantity=p.get("quantity", 0),
             average_price=p.get("average_price", 0.0),
             last_price=p.get("last_price", 0.0),

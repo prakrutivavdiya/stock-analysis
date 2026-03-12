@@ -9,6 +9,8 @@ import {
   AlertTriangle,
   SlidersHorizontal,
   RefreshCw,
+  Filter,
+  GripVertical,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Holding } from "../data/mockData";
@@ -63,7 +65,7 @@ const ALL_COLUMNS: ColDef[] = [
   { id: "exchange", label: "Exchange", group: "standard" },
   { id: "quantity", label: "Qty", group: "standard", align: "right", format: (h) => h.quantity },
   { id: "t1Quantity", label: "T+1 Qty", group: "standard", align: "right", format: (h) => h.t1Quantity > 0 ? <span className="text-amber-400">{h.t1Quantity}</span> : h.t1Quantity },
-  { id: "avgPrice", label: "Avg Price", group: "standard", align: "right", format: (h) => `₹${h.avgPrice.toFixed(2)}` },
+  { id: "avgPrice", label: "Avg Buy Price", group: "standard", align: "right", format: (h) => `₹${h.avgPrice.toFixed(2)}` },
   { id: "ltp", label: "LTP", group: "standard", align: "right", format: (h) => `₹${h.ltp.toFixed(2)}` },
   // PD-01 / US-010: Day Change (₹)
   {
@@ -216,9 +218,10 @@ const DEFAULT_COLS: ColId[] = [
   "currentValue",
 ];
 
-type SortKey = "symbol" | ColId;
+type SortKey = string;
 type SortDir = "asc" | "desc";
 type FilterKey = "all" | "gainers" | "losers" | "rsiOverbought" | "bbBuy" | "bbSell";
+type ColFilterType = "text" | "range" | "boolean" | "categorical";
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "symbol", label: "Symbol" },
@@ -238,6 +241,29 @@ const FILTER_OPTIONS: { value: FilterKey; label: string }[] = [
   { value: "bbSell", label: "BB Sell Signal" },
 ];
 
+const COL_FILTER_TYPES: Record<string, ColFilterType> = {
+  symbol: "text",
+  exchange: "text",
+  quantity: "range",
+  t1Quantity: "range",
+  avgPrice: "range",
+  ltp: "range",
+  dayChange: "range",
+  dayChangePercent: "range",
+  pnl: "range",
+  pnlPercent: "range",
+  currentValue: "range",
+  investedValue: "range",
+  dailyRSI: "range",
+  rsiOverbought: "boolean",
+  bbPosition: "categorical",
+  peRatio: "range",
+  from52WeekHigh: "range",
+  eps: "range",
+};
+
+const BB_POSITION_VALUES = ["Buy Signal", "Sell Signal", "Hold"];
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [visibleCols, setVisibleCols] = useState<ColId[]>(() => {
@@ -247,6 +273,7 @@ export default function Dashboard() {
   const [userKpis, setUserKpis] = useState<{ name: string; returnType: string }[]>([]);
   const [visibleUserKpis, setVisibleUserKpis] = useState<string[]>([]);
   const [showColPicker, setShowColPicker] = useState(false);
+  const [dragColId, setDragColId] = useState<ColId | null>(null);
   const [showFilter, setShowFilter] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -294,11 +321,27 @@ export default function Dashboard() {
     }).catch(() => {}); // best-effort
   }, [sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
+  const [colFilters, setColFilters] = useState<Record<string, string>>({});
+  const [filterPopover, setFilterPopover] = useState<string | null>(null);
+
+  // Close filter popover on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!(e.target as Element).closest("[data-filter-popover]")) {
+        setFilterPopover(null);
+      }
+    };
+    if (filterPopover !== null) {
+      document.addEventListener("mousedown", handler);
+      return () => document.removeEventListener("mousedown", handler);
+    }
+  }, [filterPopover]);
 
   // Zustand store
   const storeHoldings = useAppStore((s) => s.holdings);
   const storePositions = useAppStore((s) => s.positions);
   const storeMargins = useAppStore((s) => s.margins);
+  const livePrices = useAppStore((s) => s.livePrices);
   const setStoreHoldings = useAppStore((s) => s.setHoldings);
   const setStorePositions = useAppStore((s) => s.setPositions);
   const setStoreMargins = useAppStore((s) => s.setMargins);
@@ -387,12 +430,12 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleHeaderSort = (col: SortKey) => {
+  const handleHeaderSort = (col: string) => {
     if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(col); setSortDir("asc"); }
   };
 
-  const handleQuickSort = (key: SortKey) => {
+  const handleQuickSort = (key: string) => {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(key); setSortDir("desc"); }
   };
@@ -400,17 +443,79 @@ export default function Dashboard() {
   const filteredAndSorted = useMemo(() => {
     let rows = [...holdings];
 
+    // Global quick-filter
     if (activeFilter === "gainers") rows = rows.filter((h) => h.dayChangePercent > 0);
     else if (activeFilter === "losers") rows = rows.filter((h) => h.dayChangePercent < 0);
     else if (activeFilter === "rsiOverbought") rows = rows.filter((h) => h.kpis?.rsiOverbought);
-    // PRD KP-11: title-case filter values
     else if (activeFilter === "bbBuy") rows = rows.filter((h) => h.kpis?.bbPosition === "Buy Signal");
     else if (activeFilter === "bbSell") rows = rows.filter((h) => h.kpis?.bbPosition === "Sell Signal");
+
+    // Per-column text filters
+    if (colFilters["symbol"]) {
+      const v = colFilters["symbol"].toLowerCase();
+      rows = rows.filter((h) => h.symbol.toLowerCase().includes(v));
+    }
+    if (colFilters["exchange"]) {
+      const v = colFilters["exchange"].toLowerCase();
+      rows = rows.filter((h) => h.exchange.toLowerCase().includes(v));
+    }
+
+    // Per-column numeric range filters
+    const NUMERIC_GETTERS: Record<string, (h: Holding) => number | null | undefined> = {
+      quantity: (h) => h.quantity,
+      t1Quantity: (h) => h.t1Quantity,
+      avgPrice: (h) => h.avgPrice,
+      ltp: (h) => h.ltp,
+      dayChange: (h) => h.dayChange,
+      dayChangePercent: (h) => h.dayChangePercent,
+      pnl: (h) => h.pnl,
+      pnlPercent: (h) => h.pnlPercent,
+      currentValue: (h) => h.currentValue,
+      investedValue: (h) => h.investedValue,
+      dailyRSI: (h) => h.kpis?.dailyRSI ?? null,
+      peRatio: (h) => h.kpis?.peRatio ?? null,
+      from52WeekHigh: (h) => h.kpis?.from52WeekHigh ?? null,
+      eps: (h) => h.kpis?.eps ?? null,
+    };
+    for (const [id, getter] of Object.entries(NUMERIC_GETTERS)) {
+      const minStr = colFilters[`${id}_min`];
+      const maxStr = colFilters[`${id}_max`];
+      if (!minStr && !maxStr) continue;
+      const minN = minStr ? parseFloat(minStr) : -Infinity;
+      const maxN = maxStr ? parseFloat(maxStr) : Infinity;
+      rows = rows.filter((h) => { const v = getter(h); return v != null && v >= minN && v <= maxN; });
+    }
+
+    // Per-column boolean / categorical filters
+    if (colFilters["rsiOverbought"]) {
+      const target = colFilters["rsiOverbought"] === "true";
+      rows = rows.filter((h) => h.kpis?.rsiOverbought === target);
+    }
+    if (colFilters["bbPosition"]) {
+      rows = rows.filter((h) => h.kpis?.bbPosition === colFilters["bbPosition"]);
+    }
+
+    // User KPI column filters
+    for (const kpi of userKpis) {
+      const kpiId = `kpi_${kpi.name}`;
+      if (kpi.returnType === "BOOLEAN" && colFilters[kpiId]) {
+        const target = colFilters[kpiId] === "true";
+        rows = rows.filter((h) => (h.kpis as Record<string, unknown> | undefined)?.[kpi.name] === target);
+      } else if (kpi.returnType === "SCALAR" && (colFilters[`${kpiId}_min`] || colFilters[`${kpiId}_max`])) {
+        const minN = colFilters[`${kpiId}_min`] ? parseFloat(colFilters[`${kpiId}_min`]) : -Infinity;
+        const maxN = colFilters[`${kpiId}_max`] ? parseFloat(colFilters[`${kpiId}_max`]) : Infinity;
+        rows = rows.filter((h) => { const v = (h.kpis as Record<string, unknown> | undefined)?.[kpi.name]; return typeof v === "number" && v >= minN && v <= maxN; });
+      } else if (colFilters[kpiId]) {
+        const v = colFilters[kpiId].toLowerCase();
+        rows = rows.filter((h) => String((h.kpis as Record<string, unknown> | undefined)?.[kpi.name] ?? "").toLowerCase().includes(v));
+      }
+    }
 
     rows.sort((a, b) => {
       let av: number | string = 0;
       let bv: number | string = 0;
       if (sortKey === "symbol") { av = a.symbol; bv = b.symbol; }
+      else if (sortKey === "exchange") { av = a.exchange; bv = b.exchange; }
       else if (sortKey === "dayChangePercent") { av = a.dayChangePercent; bv = b.dayChangePercent; }
       else if (sortKey === "dayChange") { av = a.dayChange; bv = b.dayChange; }
       else if (sortKey === "pnlPercent") { av = a.pnlPercent; bv = b.pnlPercent; }
@@ -422,16 +527,24 @@ export default function Dashboard() {
       else if (sortKey === "t1Quantity") { av = a.t1Quantity; bv = b.t1Quantity; }
       else if (sortKey === "investedValue") { av = a.investedValue; bv = b.investedValue; }
       else if (sortKey === "dailyRSI") { av = a.kpis?.dailyRSI ?? -Infinity; bv = b.kpis?.dailyRSI ?? -Infinity; }
+      else if (sortKey === "rsiOverbought") { av = a.kpis?.rsiOverbought ? 1 : 0; bv = b.kpis?.rsiOverbought ? 1 : 0; }
+      else if (sortKey === "bbPosition") { av = a.kpis?.bbPosition ?? ""; bv = b.kpis?.bbPosition ?? ""; }
       else if (sortKey === "peRatio") { av = a.kpis?.peRatio ?? -Infinity; bv = b.kpis?.peRatio ?? -Infinity; }
       else if (sortKey === "from52WeekHigh") { av = a.kpis?.from52WeekHigh ?? -Infinity; bv = b.kpis?.from52WeekHigh ?? -Infinity; }
       else if (sortKey === "eps") { av = a.kpis?.eps ?? -Infinity; bv = b.kpis?.eps ?? -Infinity; }
-
+      else if (sortKey.startsWith("kpi_")) {
+        const kpiName = sortKey.slice(4);
+        const valA = (a.kpis as Record<string, unknown> | undefined)?.[kpiName];
+        const valB = (b.kpis as Record<string, unknown> | undefined)?.[kpiName];
+        av = typeof valA === "number" ? valA : typeof valA === "boolean" ? (valA ? 1 : 0) : String(valA ?? "");
+        bv = typeof valB === "number" ? valB : typeof valB === "boolean" ? (valB ? 1 : 0) : String(valB ?? "");
+      }
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sortDir === "asc" ? cmp : -cmp;
     });
 
     return rows;
-  }, [holdings, sortKey, sortDir, activeFilter]);
+  }, [holdings, sortKey, sortDir, activeFilter, colFilters, userKpis]);
 
   // PD-04: Portfolio summary totals
   const totals = useMemo(() => {
@@ -460,11 +573,11 @@ export default function Dashboard() {
 
   const colDef = (id: ColId) => ALL_COLUMNS.find((c) => c.id === id)!;
 
-  const SortIcon = ({ col }: { col: SortKey }) => {
-    if (sortKey !== col) return <ChevronsUpDown className="w-3 h-3 ml-1 opacity-40" />;
+  const SortIcon = ({ col }: { col: string }) => {
+    if (sortKey !== col) return <ChevronsUpDown className="w-3 h-3 opacity-40" />;
     return sortDir === "asc"
-      ? <ChevronUp className="w-3 h-3 ml-1 text-[#FF6600]" />
-      : <ChevronDown className="w-3 h-3 ml-1 text-[#FF6600]" />;
+      ? <ChevronUp className="w-3 h-3 text-[#FF6600]" />
+      : <ChevronDown className="w-3 h-3 text-[#FF6600]" />;
   };
 
   return (
@@ -602,40 +715,70 @@ export default function Dashboard() {
             </button>
             {showColPicker && (
               <div className="absolute top-full mt-1 right-0 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-lg z-10 p-3 w-56">
-                <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">
-                  Standard
+                {/* Visible columns — drag to reorder */}
+                <p className="text-xs font-medium text-muted-foreground mb-1 uppercase tracking-wider">
+                  Visible (drag to reorder)
                 </p>
-                {ALL_COLUMNS.filter((c) => c.group === "standard").map((c) => (
-                  <label
-                    key={c.id}
-                    className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={visibleCols.includes(c.id)}
-                      onChange={() => toggleCol(c.id)}
-                      className="accent-[#FF6600]"
-                    />
-                    {c.label}
-                  </label>
-                ))}
-                <p className="text-xs font-medium text-muted-foreground mb-2 mt-3 uppercase tracking-wider">
-                  KPIs
-                </p>
-                {ALL_COLUMNS.filter((c) => c.group === "kpi").map((c) => (
-                  <label
-                    key={c.id}
-                    className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={visibleCols.includes(c.id)}
-                      onChange={() => toggleCol(c.id)}
-                      className="accent-[#FF6600]"
-                    />
-                    {c.label}
-                  </label>
-                ))}
+                {visibleCols.map((id) => {
+                  const c = ALL_COLUMNS.find((col) => col.id === id);
+                  if (!c || c.group !== "standard") return null;
+                  return (
+                    <div
+                      key={id}
+                      draggable
+                      onDragStart={() => setDragColId(id)}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (!dragColId || dragColId === id) return;
+                        setVisibleCols((prev) => {
+                          const next = [...prev];
+                          const from = next.indexOf(dragColId);
+                          const to = next.indexOf(id);
+                          if (from === -1 || to === -1) return prev;
+                          next.splice(from, 1);
+                          next.splice(to, 0, dragColId);
+                          return next;
+                        });
+                      }}
+                      onDragEnd={() => setDragColId(null)}
+                      className={`flex items-center gap-2 px-1 py-1 text-xs rounded select-none ${
+                        dragColId === id ? "opacity-40" : "hover:bg-[#2a2a2a]"
+                      }`}
+                    >
+                      <GripVertical className="w-3 h-3 text-muted-foreground/40 cursor-grab shrink-0" />
+                      <input
+                        type="checkbox"
+                        checked
+                        onChange={() => toggleCol(id)}
+                        className="accent-[#FF6600]"
+                      />
+                      <span className="cursor-grab">{c.label}</span>
+                    </div>
+                  );
+                })}
+                {/* Hidden columns — click to add */}
+                {ALL_COLUMNS.filter((c) => c.group === "standard" && !visibleCols.includes(c.id)).length > 0 && (
+                  <>
+                    <p className="text-xs font-medium text-muted-foreground mb-1 mt-3 uppercase tracking-wider">
+                      Hidden (click to add)
+                    </p>
+                    {ALL_COLUMNS.filter((c) => c.group === "standard" && !visibleCols.includes(c.id)).map((c) => (
+                      <label
+                        key={c.id}
+                        className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
+                      >
+                        <span className="w-3 shrink-0" />
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          onChange={() => toggleCol(c.id)}
+                          className="accent-[#FF6600]"
+                        />
+                        {c.label}
+                      </label>
+                    ))}
+                  </>
+                )}
                 {userKpis.length > 0 && (
                   <>
                     <p className="text-xs font-medium text-muted-foreground mb-2 mt-3 uppercase tracking-wider">
@@ -646,6 +789,7 @@ export default function Dashboard() {
                         key={k.name}
                         className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
                       >
+                        <span className="w-3 shrink-0" />
                         <input
                           type="checkbox"
                           checked={visibleUserKpis.includes(k.name)}
@@ -667,40 +811,50 @@ export default function Dashboard() {
       <div className="flex-1 overflow-auto">
         {/* Holdings table */}
         <table className="w-full text-sm">
-          <thead className="sticky top-0 bg-[#121212] border-b border-[#2a2a2a]">
+          <thead className="sticky top-0 bg-[#121212] border-b border-[#2a2a2a] z-10">
             <tr>
-              <th
-                className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs cursor-pointer hover:text-foreground"
-                onClick={() => handleHeaderSort("symbol")}
-              >
-                <span className="flex items-center">
-                  Symbol <SortIcon col="symbol" />
-                </span>
+              {/* Symbol column */}
+              <th className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs">
+                <div className="flex items-center gap-1">
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => handleHeaderSort("symbol")}>
+                    Symbol <SortIcon col="symbol" />
+                  </button>
+                  <ColFilterBtn colId="symbol" filterType="text" filterPopover={filterPopover} setFilterPopover={setFilterPopover} colFilters={colFilters} setColFilters={setColFilters} />
+                </div>
               </th>
               {visibleCols.map((id) => {
                 const col = colDef(id);
-                const sortable = SORT_OPTIONS.some((s) => s.value === id);
+                const filterType = COL_FILTER_TYPES[id] ?? "text";
+                const isRight = col.align === "right";
                 return (
-                  <th
-                    key={id}
-                    className={`px-4 py-2.5 text-xs text-muted-foreground font-medium ${
-                      col.align === "right" ? "text-right" : "text-left"
-                    } ${sortable ? "cursor-pointer hover:text-foreground" : ""}`}
-                    onClick={sortable ? () => handleHeaderSort(id) : undefined}
-                  >
-                    <span className={`flex items-center ${col.align === "right" ? "justify-end" : ""}`}>
-                      {sortable && col.align === "right" && <SortIcon col={id} />}
-                      {col.label}
-                      {sortable && col.align !== "right" && <SortIcon col={id} />}
-                    </span>
+                  <th key={id} className={`px-4 py-2.5 text-xs text-muted-foreground font-medium ${isRight ? "text-right" : "text-left"}`}>
+                    <div className={`flex items-center gap-1 ${isRight ? "flex-row-reverse" : ""}`}>
+                      <button className="flex items-center gap-1 hover:text-foreground" onClick={() => handleHeaderSort(id)}>
+                        {isRight && <SortIcon col={id} />}
+                        {col.label}
+                        {!isRight && <SortIcon col={id} />}
+                      </button>
+                      <ColFilterBtn colId={id} filterType={filterType} filterPopover={filterPopover} setFilterPopover={setFilterPopover} colFilters={colFilters} setColFilters={setColFilters} options={id === "bbPosition" ? BB_POSITION_VALUES : undefined} align={isRight ? "right" : undefined} />
+                    </div>
                   </th>
                 );
               })}
-              {visibleUserKpis.map((name) => (
-                <th key={`kpi-${name}`} className="px-4 py-2.5 text-xs text-muted-foreground font-medium text-right">
-                  {name}
-                </th>
-              ))}
+              {visibleUserKpis.map((name) => {
+                const kpi = userKpis.find((k) => k.name === name);
+                const filterType: ColFilterType = kpi?.returnType === "BOOLEAN" ? "boolean" : kpi?.returnType === "SCALAR" ? "range" : "text";
+                const kpiId = `kpi_${name}`;
+                return (
+                  <th key={`kpi-${name}`} className="px-4 py-2.5 text-xs text-muted-foreground font-medium text-right">
+                    <div className="flex items-center gap-1 flex-row-reverse">
+                      <button className="flex items-center gap-1 hover:text-foreground" onClick={() => handleHeaderSort(kpiId)}>
+                        <SortIcon col={kpiId} />
+                        {name}
+                      </button>
+                      <ColFilterBtn colId={kpiId} filterType={filterType} filterPopover={filterPopover} setFilterPopover={setFilterPopover} colFilters={colFilters} setColFilters={setColFilters} align="right" />
+                    </div>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -721,6 +875,57 @@ export default function Dashboard() {
                       {holding.exchange}
                     </td>
                   );
+                  // Live price overrides for ltp / dayChange / dayChangePercent / pnl / currentValue
+                  const tick = holding.instrumentToken != null ? livePrices[holding.instrumentToken] : undefined;
+                  if (id === "ltp" && tick) return (
+                    <td key={id} className="px-4 py-2.5 text-right font-mono">
+                      <span className={tick.change >= 0 ? "text-green-400" : "text-red-400"}>
+                        ₹{tick.ltp.toFixed(2)}
+                      </span>
+                    </td>
+                  );
+                  if (id === "dayChangePercent" && tick) return (
+                    <td key={id} className="px-4 py-2.5 text-right">
+                      <span className={tick.change >= 0 ? "text-green-400" : "text-red-400"}>
+                        {tick.change >= 0 ? "+" : ""}{tick.change.toFixed(2)}%
+                      </span>
+                    </td>
+                  );
+                  if (id === "dayChange" && tick) return (
+                    <td key={id} className="px-4 py-2.5 text-right">
+                      <span className={tick.change >= 0 ? "text-green-400" : "text-red-400"}>
+                        {tick.change >= 0 ? "+" : ""}₹{((tick.ltp - tick.close) * holding.quantity).toFixed(2)}
+                      </span>
+                    </td>
+                  );
+                  if (id === "currentValue" && tick) {
+                    const cv = tick.ltp * holding.quantity;
+                    return (
+                      <td key={id} className="px-4 py-2.5 text-right font-mono">
+                        ₹{cv.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </td>
+                    );
+                  }
+                  if (id === "pnl" && tick) {
+                    const livePnl = (tick.ltp - holding.avgPrice) * holding.quantity;
+                    return (
+                      <td key={id} className="px-4 py-2.5 text-right">
+                        <span className={livePnl >= 0 ? "text-green-400" : "text-red-400"}>
+                          {livePnl >= 0 ? "+" : ""}₹{livePnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                        </span>
+                      </td>
+                    );
+                  }
+                  if (id === "pnlPercent" && tick && holding.avgPrice > 0) {
+                    const livePnlPct = ((tick.ltp - holding.avgPrice) / holding.avgPrice) * 100;
+                    return (
+                      <td key={id} className="px-4 py-2.5 text-right">
+                        <span className={livePnlPct >= 0 ? "text-green-400" : "text-red-400"}>
+                          {livePnlPct >= 0 ? "+" : ""}{livePnlPct.toFixed(2)}%
+                        </span>
+                      </td>
+                    );
+                  }
                   const rendered = col.format
                     ? col.format(holding)
                     : (holding[id as keyof Holding] as React.ReactNode);
@@ -789,14 +994,27 @@ export default function Dashboard() {
                     <th className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs">Symbol</th>
                     <th className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs">Product</th>
                     <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Qty</th>
-                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Avg Price</th>
+                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Avg Buy Price</th>
                     <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">LTP</th>
                     <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Unrealised P&L</th>
                     <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">M2M P&L</th>
+                    <th className="px-4 py-2.5 text-center text-muted-foreground font-medium text-xs">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {positions.map((pos) => (
+                  {positions.map((pos) => {
+                    const posTick = pos.instrumentToken != null ? livePrices[pos.instrumentToken] : undefined;
+                    const posLtp = posTick?.ltp ?? pos.ltp;
+                    const posUnrealisedPnl = posTick != null && pos.quantity !== 0
+                      ? (posTick.ltp - pos.avgPrice) * pos.quantity
+                      : pos.unrealisedPnl;
+                    const posM2mPnl = posTick != null && pos.quantity !== 0
+                      ? (posTick.ltp - posTick.close) * pos.quantity
+                      : pos.m2mPnl;
+                    // KITE-SQUARE-OFF: reverse direction to square off
+                    const sqOffTx = pos.quantity > 0 ? "SELL" : "BUY";
+                    const sqOffQty = Math.abs(pos.quantity);
+                    return (
                     <tr key={`${pos.symbol}-${pos.product}`} className="border-b border-[#1a1a1a] hover:bg-[#141414] transition-colors">
                       <td className="px-4 py-2.5">
                         <div className="font-medium">{pos.symbol}</div>
@@ -811,15 +1029,29 @@ export default function Dashboard() {
                         {pos.quantity > 0 ? "+" : ""}{pos.quantity}
                       </td>
                       <td className="px-4 py-2.5 text-right font-mono text-xs">₹{pos.avgPrice.toFixed(2)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">₹{pos.ltp.toFixed(2)}</td>
-                      <td className={`px-4 py-2.5 text-right text-xs ${pos.unrealisedPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {pos.unrealisedPnl >= 0 ? "+" : ""}₹{pos.unrealisedPnl.toFixed(2)}
+                      <td className="px-4 py-2.5 text-right font-mono text-xs">₹{posLtp.toFixed(2)}</td>
+                      <td className={`px-4 py-2.5 text-right text-xs ${posUnrealisedPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        {posUnrealisedPnl >= 0 ? "+" : ""}₹{posUnrealisedPnl.toFixed(2)}
                       </td>
-                      <td className={`px-4 py-2.5 text-right text-xs ${pos.m2mPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {pos.m2mPnl >= 0 ? "+" : ""}₹{pos.m2mPnl.toFixed(2)}
+                      <td className={`px-4 py-2.5 text-right text-xs ${posM2mPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        {posM2mPnl >= 0 ? "+" : ""}₹{posM2mPnl.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-2.5 text-center">
+                        {sqOffQty > 0 && (
+                          <button
+                            onClick={() => navigate(
+                              `/orders?squareOff=1&symbol=${encodeURIComponent(pos.symbol)}&exchange=${encodeURIComponent(pos.exchange)}&product=${encodeURIComponent(pos.product)}&txType=${sqOffTx}&quantity=${sqOffQty}&orderType=MARKET`
+                            )}
+                            className="text-xs px-2 py-0.5 rounded border border-red-500/50 text-red-400 hover:bg-red-500/10 transition-colors"
+                            title="Square off this position at market price"
+                          >
+                            Square Off
+                          </button>
+                        )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             ) : (
@@ -830,6 +1062,114 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ColFilterBtn({
+  colId,
+  filterType,
+  filterPopover,
+  setFilterPopover,
+  colFilters,
+  setColFilters,
+  options,
+  align,
+}: {
+  colId: string;
+  filterType: ColFilterType;
+  filterPopover: string | null;
+  setFilterPopover: React.Dispatch<React.SetStateAction<string | null>>;
+  colFilters: Record<string, string>;
+  setColFilters: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  options?: string[];
+  align?: "right";
+}) {
+  const isActive = !!(colFilters[colId] || colFilters[`${colId}_min`] || colFilters[`${colId}_max`]);
+  return (
+    <div className="relative shrink-0" data-filter-popover>
+      <button
+        className={`p-0.5 rounded hover:bg-[#2a2a2a] transition-colors ${isActive ? "text-[#FF6600]" : "opacity-30 hover:opacity-100"}`}
+        onClick={(e) => { e.stopPropagation(); setFilterPopover(filterPopover === colId ? null : colId); }}
+        title="Filter"
+      >
+        <Filter className="w-2.5 h-2.5" />
+      </button>
+      {filterPopover === colId && (
+        <FilterPopover
+          colId={colId}
+          filterType={filterType}
+          colFilters={colFilters}
+          setColFilters={setColFilters}
+          options={options}
+          align={align}
+        />
+      )}
+    </div>
+  );
+}
+
+function FilterPopover({
+  colId,
+  filterType,
+  colFilters,
+  setColFilters,
+  options,
+  align,
+}: {
+  colId: string;
+  filterType: ColFilterType;
+  colFilters: Record<string, string>;
+  setColFilters: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  options?: string[];
+  align?: "right";
+}) {
+  const update = (key: string, value: string) => {
+    setColFilters((prev) => {
+      if (!value) { const { [key]: _, ...rest } = prev; return rest; }
+      return { ...prev, [key]: value };
+    });
+  };
+  const clear = () => setColFilters((prev) => {
+    const next = { ...prev };
+    delete next[colId]; delete next[`${colId}_min`]; delete next[`${colId}_max`];
+    return next;
+  });
+  const hasValue = !!(colFilters[colId] || colFilters[`${colId}_min`] || colFilters[`${colId}_max`]);
+  const cls = "w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-2 py-1 text-xs focus:outline-none focus:border-[#FF6600]";
+
+  return (
+    <div
+      className={`absolute top-full mt-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-xl z-50 p-2 w-36 ${align === "right" ? "right-0" : "left-0"}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {filterType === "range" && (
+        <div className="flex flex-col gap-1">
+          <input type="number" placeholder="Min" value={colFilters[`${colId}_min`] ?? ""} onChange={(e) => update(`${colId}_min`, e.target.value)} className={cls} autoFocus />
+          <input type="number" placeholder="Max" value={colFilters[`${colId}_max`] ?? ""} onChange={(e) => update(`${colId}_max`, e.target.value)} className={cls} />
+        </div>
+      )}
+      {filterType === "boolean" && (
+        <select value={colFilters[colId] ?? ""} onChange={(e) => update(colId, e.target.value)} className={cls} autoFocus>
+          <option value="">All</option>
+          <option value="true">True</option>
+          <option value="false">False</option>
+        </select>
+      )}
+      {filterType === "categorical" && (
+        <select value={colFilters[colId] ?? ""} onChange={(e) => update(colId, e.target.value)} className={cls} autoFocus>
+          <option value="">All</option>
+          {(options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )}
+      {filterType === "text" && (
+        <input type="text" placeholder="Search…" value={colFilters[colId] ?? ""} onChange={(e) => update(colId, e.target.value)} className={cls} autoFocus />
+      )}
+      {hasValue && (
+        <button onClick={clear} className="mt-1.5 w-full text-[10px] text-muted-foreground hover:text-foreground text-center py-0.5 hover:bg-[#2a2a2a] rounded">
+          Clear
+        </button>
+      )}
     </div>
   );
 }

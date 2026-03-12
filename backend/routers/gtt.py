@@ -29,17 +29,33 @@ router = APIRouter()
 
 def _parse_gtt(g: dict) -> GTTOut:
     condition = g.get("condition", {})
-    orders = g.get("orders", [{}])
-    order = orders[0] if orders else {}
+    orders = g.get("orders", [])
+    trigger_type = g.get("type", "single")
+    trigger_values = condition.get("trigger_values", [])
+    first_order = orders[0] if orders else {}
+    second_order = orders[1] if len(orders) > 1 else {}
+
+    def _price(o: dict) -> float | None:
+        v = float(o.get("price", 0) or 0)
+        return v if v else None
+
     return GTTOut(
         trigger_id=int(g.get("id", 0)),
         tradingsymbol=condition.get("tradingsymbol", ""),
-        trigger_type=g.get("type", "single"),
-        trigger_value=float(condition.get("trigger_values", [0])[0]) if condition.get("trigger_values") else None,
-        limit_price=float(order.get("price", 0)) or None,
-        quantity=int(order.get("quantity", 0)) or None,
-        transaction_type=order.get("transaction_type", ""),
-        status=g.get("status", ""),
+        exchange=condition.get("exchange", "NSE"),
+        trigger_type=trigger_type,
+        transaction_type=first_order.get("transaction_type", ""),
+        product=first_order.get("product", "CNC"),
+        quantity=int(first_order.get("quantity", 0)) or None,
+        status=g.get("status", "").upper(),
+        # single-leg
+        trigger_value=float(trigger_values[0]) if trigger_type == "single" and trigger_values else None,
+        limit_price=_price(first_order) if trigger_type == "single" else None,
+        # two-leg: Kite sends [lower, upper] in trigger_values
+        lower_trigger_value=float(trigger_values[0]) if trigger_type == "two-leg" and len(trigger_values) > 0 else None,
+        lower_limit_price=_price(first_order) if trigger_type == "two-leg" else None,
+        upper_trigger_value=float(trigger_values[1]) if trigger_type == "two-leg" and len(trigger_values) > 1 else None,
+        upper_limit_price=_price(second_order) if trigger_type == "two-leg" else None,
     )
 
 
@@ -108,7 +124,7 @@ async def create_gtt(
                     },
                 ],
             )
-        trigger_id = int(raw_id)
+        trigger_id = int(raw_id["trigger_id"])  # Kite returns {"trigger_id": int}
     except Exception as exc:
         outcome = "FAILURE"
         error_message = str(exc)

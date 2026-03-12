@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router";
 import {
   LayoutGrid,
@@ -11,8 +11,11 @@ import {
   RefreshCw,
   Settings,
   ChevronDown,
+  Star,
 } from "lucide-react";
 import AuthGuard from "./AuthGuard";
+import InstrumentSearch from "./InstrumentSearch";
+import type { InstrumentResult } from "../api/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +26,8 @@ import {
 import { useAppStore } from "../data/store";
 import { logout } from "../api/auth";
 import { ApiError } from "../api/client";
+import { useQuotesSocket } from "../api/quotes";
+import WatchlistPanel from "./WatchlistPanel";
 
 function getInitials(name: string): string {
   return name
@@ -37,14 +42,37 @@ export default function AppShell() {
   const [sidebarExpanded, setSidebarExpanded] = useState(false);
   const [sidebarPinned, setSidebarPinned] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [watchlistOpen, setWatchlistOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
 
   const user = useAppStore((s) => s.user);
   const clearUser = useAppStore((s) => s.clearUser);
+  const holdingsData = useAppStore((s) => s.holdings.data);
+  const livePrices   = useAppStore((s) => s.livePrices);
+  const watchlistData = useAppStore((s) => s.watchlists.data);
+  const activeWatchlistId = useAppStore((s) => s.activeWatchlistId);
 
-  // H-01: Kite session expired banner — driven by real user data
-  const isKiteSessionExpired = user != null && user.kite_session_valid === false;
+  // First watchlist for topbar ticker (or fall back to holdings)
+  const firstWatchlist = watchlistData?.find((w) => w.id === activeWatchlistId) ?? watchlistData?.[0];
+  const tickerItems = firstWatchlist?.items.slice(0, 3) ?? [];
+
+  // Start single shared WebSocket connection for the whole app
+  useQuotesSocket();
+
+  // SESSION-EXPIRE: listen for 403 mid-session and surface the re-auth banner
+  const [kiteApiSessionExpired, setKiteApiSessionExpired] = useState(false);
+  useEffect(() => {
+    const handler = () => {
+      setKiteApiSessionExpired(true);
+      setBannerDismissed(false);
+    };
+    window.addEventListener("kite-session-expired", handler);
+    return () => window.removeEventListener("kite-session-expired", handler);
+  }, []);
+
+  // H-01: Kite session expired banner — driven by real user data or mid-session 403
+  const isKiteSessionExpired = (user != null && user.kite_session_valid === false) || kiteApiSessionExpired;
 
   const userName = user?.name ?? "User";
   const userEmail = user?.email ?? "—";
@@ -98,6 +126,10 @@ export default function AppShell() {
   const isActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(path + "/");
 
+  const handleInstrumentSelect = (inst: InstrumentResult) => {
+    navigate(`/charts?token=${inst.instrument_token}&symbol=${encodeURIComponent(inst.tradingsymbol)}&exchange=${inst.exchange}`);
+  };
+
   const showBanner = isKiteSessionExpired && !bannerDismissed;
   const bannerHeight = showBanner ? "h-10" : "h-0";
 
@@ -120,17 +152,19 @@ export default function AppShell() {
             </div>
           </div>
 
+          {/* Global instrument search */}
+          <InstrumentSearch onSelect={handleInstrumentSelect} />
+
           <div className="flex items-center gap-4">
-            {/* Watchlist ticker — Dashboard and Charts only */}
-            {(location.pathname === "/dashboard" || location.pathname.startsWith("/charts")) && (
-              <div className="hidden md:flex items-center gap-4 text-sm">
-                <span className="text-green-500">INFY ▲1290 +1.08%</span>
-                <span className="text-muted-foreground">HDFCBANK +0.4%</span>
-                <span className="text-muted-foreground">ITC +0.2%</span>
-              </div>
-            )}
             <button className="p-2 hover:bg-[#2a2a2a] rounded" title="Refresh live data">
               <RefreshCw className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setWatchlistOpen((v) => !v)}
+              className={`p-2 hover:bg-[#2a2a2a] rounded transition-colors ${watchlistOpen ? "text-[#FF6600]" : "text-muted-foreground hover:text-foreground"}`}
+              title="Watchlist"
+            >
+              <Star className="w-4 h-4" />
             </button>
 
             {/* H-02: User dropdown */}
@@ -272,14 +306,19 @@ export default function AppShell() {
 
         {/* Main content */}
         <main
-          className={`pt-14 min-h-screen transition-all duration-200 ${
+          className={`min-h-screen transition-all duration-200 ${
             sidebarExpanded || sidebarPinned ? "ml-[200px]" : "ml-[56px]"
-          } ${showBanner ? "pt-24" : "pt-14"}`}
+          } ${watchlistOpen ? "mr-80" : ""} ${showBanner ? "pt-24" : "pt-14"}`}
         >
           <div className={`${showBanner ? "h-[calc(100vh-6rem)]" : "h-[calc(100vh-3.5rem)]"}`}>
             <Outlet />
           </div>
         </main>
+
+        {/* Watchlist panel */}
+        {watchlistOpen && (
+          <WatchlistPanel onClose={() => setWatchlistOpen(false)} />
+        )}
       </div>
     </AuthGuard>
   );

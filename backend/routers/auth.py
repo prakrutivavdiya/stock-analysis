@@ -208,9 +208,46 @@ async def callback(
     ))
     await db.commit()
 
+    # Start/update KiteTicker in background — non-blocking, non-fatal
+    user_id_for_ticker = user.id
+    asyncio.create_task(
+        _start_ticker_after_login(kc, access_token_raw, str(user_id_for_ticker))
+    )
+
     redirect = RedirectResponse(url=f"{settings.FRONTEND_URL}/dashboard", status_code=302)
     _set_auth_cookies(redirect, access_token, raw_rt)
     return redirect
+
+
+async def _start_ticker_after_login(kc: KiteConnect, access_token: str, user_id: str) -> None:
+    """Fetch holdings + watchlist tokens and (re)start the KiteTicker after login."""
+    import uuid as _uuid
+    from backend.config import settings as _settings
+    from backend.ticker import start_ticker
+    from backend.database import AsyncSessionLocal
+    from backend.models import WatchlistItem
+    from sqlalchemy import select as _select
+
+    try:
+        holdings = await asyncio.to_thread(kc.holdings)
+        tokens: set[int] = {h["instrument_token"] for h in holdings if h.get("instrument_token")}
+
+        # Also subscribe all watchlist tokens for this user
+        try:
+            async with AsyncSessionLocal() as _db:
+                wl_tokens = (await _db.execute(
+                    _select(WatchlistItem.instrument_token).where(
+                        WatchlistItem.user_id == _uuid.UUID(user_id)
+                    )
+                )).scalars().all()
+                tokens.update(wl_tokens)
+        except Exception:
+            pass  # watchlist tokens are nice-to-have
+
+        await start_ticker(list(tokens), _settings.KITE_API_KEY, access_token)
+        logger.info("Auth: KiteTicker started with %d tokens after login", len(tokens))
+    except Exception as exc:
+        logger.warning("Auth: KiteTicker startup after login failed: %s", exc)
 
 
 @router.post("/refresh", response_model=RefreshResponse)

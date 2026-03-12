@@ -10,12 +10,22 @@ export default function AuthGuard({ children }: { children?: React.ReactNode }) 
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
+    // Dev bypass: "Skip login" button sets this flag
+    if (import.meta.env.DEV && sessionStorage.getItem("devBypass") === "true") {
+      setChecking(false);
+      return;
+    }
     getMe()
       .then((data) => {
         setUser(data);
         setChecking(false);
       })
-      .catch(() => {
+      .catch((err) => {
+        // Also bypass when backend is unreachable (network error, status=0)
+        if (import.meta.env.DEV && err instanceof ApiError && err.status === 0) {
+          setChecking(false);
+          return;
+        }
         navigate("/login");
       });
   }, [navigate, setUser]);

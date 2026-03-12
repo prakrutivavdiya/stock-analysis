@@ -90,7 +90,7 @@ async def test_list_gtts_returns_active_gtts(
     assert g["trigger_id"] == 1001
     assert g["tradingsymbol"] == "INFY"
     assert g["trigger_type"] == "single"
-    assert g["status"] == "active"
+    assert g["status"] == "ACTIVE"  # router normalises to uppercase
 
 
 async def test_list_gtts_empty(
@@ -120,7 +120,7 @@ async def test_create_single_leg_gtt_success(
     client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
 ) -> None:
     """Creates a single-leg GTT, writes PLACE_GTT audit log."""
-    mock_kite.place_gtt.return_value = 1001
+    mock_kite.place_gtt.return_value = {"trigger_id": 1001}
     mock_kite.GTT_TYPE_SINGLE = "single"
 
     response = await client.post("/api/v1/gtt", json=_single_gtt_payload())
@@ -146,7 +146,7 @@ async def test_create_two_leg_gtt_success(
     client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
 ) -> None:
     """Creates a two-leg GTT successfully."""
-    mock_kite.place_gtt.return_value = 1002
+    mock_kite.place_gtt.return_value = {"trigger_id": 1002}
     mock_kite.GTT_TYPE_TWO_LEG = "two-leg"
 
     response = await client.post("/api/v1/gtt", json=_two_leg_gtt_payload())

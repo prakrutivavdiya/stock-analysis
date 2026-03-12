@@ -191,6 +191,47 @@ async def test_place_paper_trade_does_not_call_kite(
     assert log.action_type == "PAPER_TRADE"
 
 
+async def test_global_paper_trade_mode_uses_user_preference(
+    client: AsyncClient, mock_kite: MagicMock, mock_user, db_session: AsyncSession
+) -> None:
+    """
+    When user.paper_trade_mode=True and no paper_trade flag in the body,
+    the order is treated as a paper trade (TEST-PAPER: global mode override).
+    """
+    mock_user.paper_trade_mode = True
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "transaction_type": "BUY",
+            "quantity": 5,
+            "product": "CNC",
+            "order_type": "MARKET",
+            "validity": "DAY",
+            # paper_trade is intentionally omitted — falls back to user.paper_trade_mode
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["paper_trade"] is True
+    assert body["order_id"].startswith("PAPER-")
+
+    # Kite must not be called
+    mock_kite.place_order.assert_not_called()
+
+    # Audit log must record PAPER_TRADE, not PLACE_ORDER
+    result = await db_session.execute(
+        select(AuditLog).where(AuditLog.user_id == USER_ID)
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None
+    assert log.action_type == "PAPER_TRADE"
+    assert log.outcome == "SUCCESS"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PUT /orders/{order_id}
 # ─────────────────────────────────────────────────────────────────────────────
@@ -308,3 +349,185 @@ async def test_order_history_kite_error_returns_502(
     mock_kite.order_history.side_effect = Exception("order not found")
     response = await client.get("/api/v1/orders/BADORDER/history")
     assert response.status_code == 502
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CDSL / eDIS authorization errors
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_place_cnc_sell_cdsl_error_returns_cdsl_auth_required(
+    client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
+) -> None:
+    """
+    When Kite raises a CDSL/eDIS authorization error for a CNC SELL order,
+    the endpoint returns 422 with code=CDSL_AUTH_REQUIRED instead of a generic rejection.
+    """
+    mock_kite.place_order.side_effect = Exception(
+        "Delivery sale for instrument NSE:INFY requires CDSL TPIN authorisation."
+    )
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "transaction_type": "SELL",
+            "quantity": 5,
+            "product": "CNC",
+            "order_type": "MARKET",
+            "validity": "DAY",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    error = body["detail"]["error"]
+    assert error["code"] == "CDSL_AUTH_REQUIRED"
+    assert error["tradingsymbol"] == "INFY"
+    assert error["exchange"] == "NSE"
+    assert error["qty"] == 5
+
+    # Audit log should still record the failure
+    from sqlalchemy import select as _select
+    result = await db_session.execute(
+        _select(AuditLog).where(AuditLog.user_id == USER_ID)
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None
+    assert log.outcome == "FAILURE"
+    assert "cdsl" in (log.error_message or "").lower()
+
+
+async def test_place_order_edis_keyword_triggers_cdsl_error(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """eDIS keyword in Kite error also triggers CDSL_AUTH_REQUIRED."""
+    mock_kite.place_order.side_effect = Exception("edis: not authorised for this ISIN")
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "SBIN",
+            "exchange": "NSE",
+            "transaction_type": "SELL",
+            "quantity": 10,
+            "product": "CNC",
+            "order_type": "MARKET",
+            "validity": "DAY",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"]["code"] == "CDSL_AUTH_REQUIRED"
+
+
+async def test_place_order_non_cdsl_rejection_returns_kite_order_rejected(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """Non-CDSL Kite error still returns KITE_ORDER_REJECTED code."""
+    mock_kite.place_order.side_effect = Exception("Insufficient margin for this order")
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "transaction_type": "BUY",
+            "quantity": 100,
+            "product": "CNC",
+            "order_type": "MARKET",
+            "validity": "DAY",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"]["code"] == "KITE_ORDER_REJECTED"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /orders/cdsl/form
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_cdsl_form_returns_html_on_kite_success(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """
+    When Kite API returns a valid edisFormHtml, the endpoint serves it as text/html.
+    We mock httpx.AsyncClient so the test is hermetic (no real Kite call).
+    """
+    from unittest.mock import AsyncMock, patch, MagicMock as MM
+
+    kite_response_body = {
+        "status": "ok",
+        "data": {"edisFormHtml": "<form method='POST' action='https://edis.cdslindia.com/edis/TPIN'>CDSL form</form>"},
+    }
+
+    mock_http_resp = MM()
+    mock_http_resp.status_code = 200
+    mock_http_resp.json.return_value = kite_response_body
+
+    mock_http_client = AsyncMock()
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=False)
+    mock_http_client.post = AsyncMock(return_value=mock_http_resp)
+
+    with patch("backend.routers.orders.httpx.AsyncClient", return_value=mock_http_client):
+        response = await client.get(
+            "/api/v1/orders/cdsl/form",
+            params={"isin": "INE009A01021", "qty": 5, "exchange": "NSE"},
+        )
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "CDSL form" in response.text
+
+
+async def test_cdsl_form_returns_fallback_html_on_kite_error(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """
+    When Kite API returns an error, the endpoint serves the fallback HTML page
+    with a link to kite.zerodha.com (status 200 — it's still a usable page).
+    """
+    from unittest.mock import AsyncMock, patch, MagicMock as MM
+
+    mock_http_resp = MM()
+    mock_http_resp.status_code = 403
+    mock_http_resp.json.return_value = {"status": "error", "message": "Invalid session"}
+
+    mock_http_client = AsyncMock()
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=False)
+    mock_http_client.post = AsyncMock(return_value=mock_http_resp)
+
+    with patch("backend.routers.orders.httpx.AsyncClient", return_value=mock_http_client):
+        response = await client.get(
+            "/api/v1/orders/cdsl/form",
+            params={"isin": "INE009A01021", "qty": 5, "exchange": "NSE"},
+        )
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "kite.zerodha.com" in response.text
+
+
+async def test_cdsl_form_missing_isin_returns_422(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """Missing required isin parameter returns 422."""
+    response = await client.get(
+        "/api/v1/orders/cdsl/form",
+        params={"qty": 5, "exchange": "NSE"},
+    )
+    assert response.status_code == 422
+
+
+async def test_cdsl_form_invalid_qty_returns_422(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """qty must be > 0."""
+    response = await client.get(
+        "/api/v1/orders/cdsl/form",
+        params={"isin": "INE009A01021", "qty": 0, "exchange": "NSE"},
+    )
+    assert response.status_code == 422

@@ -42,8 +42,10 @@ export function mapGtt(g: ApiGTT): GTTOrder {
   return {
     id: String(g.trigger_id),
     symbol: g.tradingsymbol,
+    exchange: g.exchange,
     type: g.trigger_type,
     transaction: g.transaction_type,
+    product: (g.product as "CNC" | "MIS" | "NRML") ?? "CNC",
     quantity: g.quantity,
     status: g.status,
     // single-leg fields

@@ -66,8 +66,13 @@ def get_kite_client(user: Annotated[User, Depends(get_current_user)]) -> KiteCon
     Return an authenticated KiteConnect instance scoped to the requesting user.
     The Kite access token is decrypted from the database on every request.
     """
+    if not user.kite_access_token_enc:
+        raise HTTPException(status_code=503, detail="Kite session not available — please re-authenticate")
+    try:
+        access_token = decrypt_token(user.kite_access_token_enc, settings.KITE_ENCRYPTION_KEY)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Kite session invalid — please re-authenticate") from exc
     kc = KiteConnect(api_key=settings.KITE_API_KEY)
-    access_token = decrypt_token(user.kite_access_token_enc, settings.KITE_ENCRYPTION_KEY)
     kc.set_access_token(access_token)
     return kc
 

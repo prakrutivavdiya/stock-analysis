@@ -21,7 +21,8 @@
 
 import { create } from "zustand";
 import type { Holding, Position, Order, Margin, GTTOrder } from "./mockData";
-import type { MeResponse } from "../api/types";
+import type { MeResponse, WatchlistOut } from "../api/types";
+import type { LiveTick } from "../api/quotes";
 
 // ---------------------------------------------------------------------------
 // TTL constants — match DATA_MODEL spec
@@ -33,6 +34,7 @@ export const TTL_MS = {
   ordersToday: 30_000,
   gttOrders: 30_000,
   margins: 30_000,
+  watchlists: 120_000,
 } as const;
 
 /** Returns true when a cached timestamp is still within its TTL. */
@@ -119,10 +121,21 @@ interface AppStore {
   setOhlcv: (instrumentToken: number, interval: string, candles: OhlcvCandle[]) => void;
   getOhlcv: (instrumentToken: number, interval: string) => OhlcvCandle[] | undefined;
 
+  // --- Live tick prices (keyed by instrument_token) ---
+  livePrices: Record<number, LiveTick>;
+  setLivePrices: (ticks: LiveTick[]) => void;
+
   // --- Actions: indicators ---
   setIndicatorSeries: (key: string, series: unknown[]) => void;
   getIndicatorSeries: (key: string) => unknown[] | undefined;
   clearIndicatorValues: () => void;
+
+  // --- Watchlists ---
+  watchlists: CacheSlice<WatchlistOut[]>;
+  setWatchlists: (data: WatchlistOut[]) => void;
+  isWatchlistsFresh: () => boolean;
+  activeWatchlistId: string | null;
+  setActiveWatchlistId: (id: string | null) => void;
 
   // --- TTL helpers ---
   isHoldingsFresh: () => boolean;
@@ -150,9 +163,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   ordersToday: emptyCache<Order[]>(),
   gttOrders: emptyCache<GTTOrder[]>(),
   margins: emptyCache<Margin>(),
+  watchlists: emptyCache<WatchlistOut[]>(),
+  activeWatchlistId: null,
   kpiValues: {},
   ohlcvSession: {},
   indicatorValues: {},
+  livePrices: {},
 
   // --- Live data setters ---
   setHoldings: (data) =>
@@ -201,6 +217,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return get().ohlcvSession[key];
   },
 
+  // --- Live price actions ---
+  setLivePrices: (ticks) =>
+    set((s) => {
+      const updated = { ...s.livePrices };
+      for (const t of ticks) updated[t.instrument_token] = t;
+      return { livePrices: updated };
+    }),
+
   // --- Indicator actions ---
   setIndicatorSeries: (key, series) => {
     set((state) => ({
@@ -212,10 +236,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   clearIndicatorValues: () => set({ indicatorValues: {} }),
 
+  // --- Watchlist actions ---
+  setWatchlists: (data) => set({ watchlists: { data, fetchedAt: Date.now() } }),
+  setActiveWatchlistId: (id) => set({ activeWatchlistId: id }),
+
   // --- TTL helpers ---
   isHoldingsFresh: () => isFresh(get().holdings.fetchedAt, TTL_MS.holdings),
   isPositionsFresh: () => isFresh(get().positions.fetchedAt, TTL_MS.positions),
   isOrdersTodayFresh: () => isFresh(get().ordersToday.fetchedAt, TTL_MS.ordersToday),
   isGttOrdersFresh: () => isFresh(get().gttOrders.fetchedAt, TTL_MS.gttOrders),
   isMarginsFresh: () => isFresh(get().margins.fetchedAt, TTL_MS.margins),
+  isWatchlistsFresh: () => isFresh(get().watchlists.fetchedAt, TTL_MS.watchlists),
 }));

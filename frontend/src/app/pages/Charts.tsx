@@ -89,6 +89,7 @@ export const INDICATOR_CATALOG: IndicatorDef[] = [
   { key: "BB_PCT_20",      label: "BB %B (20)",           category: "Volatility", group: "oscillator", color: "#6366f1" },
   { key: "STDEV_20",       label: "Std Deviation (20)",   category: "Volatility", group: "oscillator", color: "#94a3b8" },
   // ── Volume oscillators ────────────────────────────────────────────────────
+  { key: "VOLUME",         label: "Volume",               category: "Volume",     group: "oscillator", color: "#64748b" },
   { key: "OBV",            label: "OBV",                  category: "Volume",     group: "oscillator", color: "#22d3ee" },
   { key: "MFI_14",         label: "MFI (14)",             category: "Volume",     group: "oscillator", color: "#34d399" },
   { key: "CMF_20",         label: "CMF (20)",             category: "Volume",     group: "oscillator", color: "#4ade80" },
@@ -130,6 +131,21 @@ export function getIndicatorName(spec: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Period helpers — indicators with _N suffix support custom period editing
+// ---------------------------------------------------------------------------
+
+/** Extract the primary period number from a key like RSI_14, BB_20, STOCH_14_3 */
+function parsePeriod(key: string): number | null {
+  const m = key.match(/_(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Replace the first numeric segment: RSI_14 + 9 → RSI_9 */
+function applyPeriod(key: string, period: number): string {
+  return key.replace(/_(\d+)/, `_${period}`);
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -146,6 +162,8 @@ export default function Charts() {
   const [activeIndicators, setActiveIndicators] = useState<string[]>([]);
   const [indicatorSearch,  setIndicatorSearch]  = useState("");
   const [showPanel,        setShowPanel]        = useState(false);
+  // IND-PARAMS: inline period editing for active indicator badges
+  const [editingPeriod, setEditingPeriod] = useState<{ key: string; value: string } | null>(null);
 
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
@@ -156,8 +174,12 @@ export default function Charts() {
   const roRef          = useRef<ResizeObserver | null>(null);
   const panelRef       = useRef<HTMLDivElement>(null);
   const candleCacheRef = useRef<CandleCache | null>(null);
+  // Live candle update refs — written by chart useEffect, read by tick subscriber
+  const seriesRef  = useRef<ReturnType<IChartApi["addSeries"]> | null>(null);
+  const tokenRef   = useRef<number | null>(null);
 
-  const storeHoldings   = useAppStore((s) => s.holdings.data ?? []);
+  const holdingsData    = useAppStore((s) => s.holdings.data);
+  const storeHoldings   = holdingsData ?? [];
   const holdingSymbols  = storeHoldings.map((h) => ({ symbol: h.symbol, exchange: h.exchange }));
   const filteredSymbols = search
     ? holdingSymbols.filter((h) => h.symbol.toLowerCase().includes(search.toLowerCase()))
@@ -263,21 +285,31 @@ export default function Charts() {
         const ohlcData = sorted.map((c) => ({ time: toTime(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close }));
         const lineData = ohlcData.map((c) => ({ time: c.time, value: c.close }));
 
-        if      (chartType === "candle") chart.addSeries(CandlestickSeries, { upColor: "#22c55e", downColor: "#ef4444", borderVisible: false, wickUpColor: "#22c55e", wickDownColor: "#ef4444" }).setData(ohlcData);
-        else if (chartType === "bar")    chart.addSeries(BarSeries, { upColor: "#22c55e", downColor: "#ef4444" }).setData(ohlcData);
-        else if (chartType === "line")   chart.addSeries(LineSeries, { color: "#FF6600", lineWidth: 2 }).setData(lineData);
-        else                             chart.addSeries(AreaSeries, { lineColor: "#FF6600", topColor: "rgba(255,102,0,0.4)", bottomColor: "rgba(255,102,0,0)" }).setData(lineData);
+        let priceSeries: ReturnType<IChartApi["addSeries"]>;
+        if      (chartType === "candle") priceSeries = chart.addSeries(CandlestickSeries, { upColor: "#22c55e", downColor: "#ef4444", borderVisible: false, wickUpColor: "#22c55e", wickDownColor: "#ef4444" });
+        else if (chartType === "bar")    priceSeries = chart.addSeries(BarSeries, { upColor: "#22c55e", downColor: "#ef4444" });
+        else if (chartType === "line")   priceSeries = chart.addSeries(LineSeries, { color: "#FF6600", lineWidth: 2 });
+        else                             priceSeries = chart.addSeries(AreaSeries, { lineColor: "#FF6600", topColor: "rgba(255,102,0,0.4)", bottomColor: "rgba(255,102,0,0)" });
+        priceSeries.setData(chartType === "candle" || chartType === "bar" ? ohlcData : lineData);
+        seriesRef.current = priceSeries;
+        tokenRef.current  = token;
 
         // ── 4. Indicators ─────────────────────────────────────────────────
         if (activeIndicators.length > 0) {
           try {
+            // VOLUME is computed client-side from candle data — exclude from backend request
+            const backendIndicators = activeIndicators.filter((i) => i !== "VOLUME");
             const qs2 = new URLSearchParams({
               instrument_token: String(token),
               interval: backendInterval, from_date: from, to_date: to,
-              indicators: activeIndicators.join(","),
+              indicators: backendIndicators.join(","),
+              tradingsymbol: symbol,
+              exchange: exchange,
             });
             type Row = Record<string, unknown>;
-            const indData = await apiFetch<Record<string, Row[]>>(`/charts/indicators/compute?${qs2}`);
+            const indData: Record<string, Row[]> = backendIndicators.length > 0
+              ? await apiFetch<Record<string, Row[]>>(`/charts/indicators/compute?${qs2}`)
+              : {};
             if (cancelled || !chartRef.current) return;
 
             let oscPane = 1;
@@ -373,6 +405,15 @@ export default function Charts() {
                 s.createPriceLine({ price: -20, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "-20" });
                 s.createPriceLine({ price: -80, color: "#22c55e", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "-80" });
 
+              // ── Volume histogram (client-side, no backend call needed) ───
+              } else if (name === "VOLUME") {
+                const volData = sorted.map((c) => ({ time: toTime(c.timestamp), value: c.volume ?? 0 }));
+                chart.addSeries(HistogramSeries, {
+                  color: "#64748b",
+                  priceFormat: { type: "volume" },
+                  priceScaleId: "vol",
+                } as Parameters<typeof chart.addSeries>[1], oscPane++).setData(volData);
+
               // ── Generic single-line oscillator ───────────────────────────
               } else {
                 addLine(valueList(rows), color, oscPane++);
@@ -407,6 +448,34 @@ export default function Charts() {
       roRef.current?.disconnect(); roRef.current    = null;
     };
   }, [symbol, exchange, interval, chartType, activeIndicators, retryKey]);
+
+  // ── Live candle updates from KiteTicker ───────────────────────────────────
+  useEffect(() => {
+    const backendInterval = INTERVALS.find((iv) => iv.value === interval)?.backend ?? "day";
+    const isIntraday = backendInterval !== "day";
+    // Parse interval minutes from backend string, e.g. "5minute" → 5
+    const intervalMins = isIntraday ? parseInt(backendInterval) : 0;
+
+    return useAppStore.subscribe((state, prevState) => {
+      const token = tokenRef.current ?? -1;
+      if (token === -1) return;
+      const tick = state.livePrices[token];
+      if (!tick || tick === prevState.livePrices[token] || !seriesRef.current) return;
+      const tradeTime = tick.last_trade_time ? new Date(tick.last_trade_time) : new Date();
+      let t: UTCTimestamp;
+      if (!isIntraday) {
+        t = tradeTime.toISOString().slice(0, 10) as unknown as UTCTimestamp;
+      } else {
+        const ms = intervalMins * 60 * 1000;
+        t = (Math.floor(tradeTime.getTime() / ms) * ms / 1000) as UTCTimestamp;
+      }
+      try {
+        seriesRef.current.update({ time: t, open: tick.open, high: tick.high, low: tick.low, close: tick.ltp });
+      } catch {
+        // series may have been removed during chart rebuild
+      }
+    });
+  }, [interval]);
 
   // ── Filtered indicator list for panel ─────────────────────────────────────
   const filteredCatalog = indicatorSearch
@@ -541,15 +610,54 @@ export default function Charts() {
           </div>
         </div>
 
-        {/* Active indicator badges */}
+        {/* Active indicator badges — click period to edit inline */}
         {activeIndicators.length > 0 && (
           <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[#2a2a2a] bg-[#0f0f0f] flex-wrap">
             {activeIndicators.map((key) => {
               const def = INDICATOR_CATALOG.find((d) => d.key === key);
+              const period = parsePeriod(key);
+              const isEditing = editingPeriod?.key === key;
               return (
                 <span key={key} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] bg-[#1a1a1a] border border-[#2a2a2a]">
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: def?.color }} />
-                  {def?.label ?? key}
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: def?.color }} />
+                  <span>{def?.label?.replace(/\s*\(\d+.*\)$/, "") ?? key.replace(/_\d+.*$/, "")}</span>
+                  {period !== null && (
+                    isEditing ? (
+                      <input
+                        type="number"
+                        min={1}
+                        max={500}
+                        value={editingPeriod.value}
+                        onChange={(e) => setEditingPeriod({ key, value: e.target.value })}
+                        onBlur={() => {
+                          const n = parseInt(editingPeriod.value, 10);
+                          if (n > 0) {
+                            setActiveIndicators((prev) =>
+                              prev.map((k) => k === key ? applyPeriod(k, n) : k)
+                            );
+                          }
+                          setEditingPeriod(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setEditingPeriod(null);
+                        }}
+                        autoFocus
+                        className="w-10 bg-[#0a0a0a] border border-[#FF6600] rounded px-1 text-[11px] text-center focus:outline-none"
+                        onClick={(e) => e.stopPropagation()}
+                        data-testid={`period-input-${key}`}
+                      />
+                    ) : (
+                      <button
+                        onClick={() => setEditingPeriod({ key, value: String(period) })}
+                        title="Click to change period"
+                        className="text-[#FF6600] hover:text-[#ff7700] font-mono leading-none"
+                        data-testid={`period-btn-${key}`}
+                      >
+                        ({period})
+                      </button>
+                    )
+                  )}
                   <button onClick={() => toggleIndicator(key)} className="ml-0.5 text-muted-foreground hover:text-foreground leading-none">×</button>
                 </span>
               );

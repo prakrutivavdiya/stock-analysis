@@ -70,3 +70,10 @@ class CancelOrderResponse(BaseModel):
 class OrderHistoryResponse(BaseModel):
     order_id: str
     history: list[dict]
+
+
+class CDSLAuthUrlResponse(BaseModel):
+    auth_url: str
+    isin: str
+    qty: int
+    exchange: str

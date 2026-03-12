@@ -133,6 +133,9 @@ class User(Base):
     chart_drawings: Mapped[list["ChartDrawing"]] = relationship(
         "ChartDrawing", back_populates="user", cascade="all, delete-orphan"
     )
+    watchlists: Mapped[list["Watchlist"]] = relationship(
+        "Watchlist", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Indexes per DATA_MODEL spec
     __table_args__ = (
@@ -632,3 +635,107 @@ class FundamentalCache(Base):
             f"<FundamentalCache symbol={self.tradingsymbol!r} "
             f"pe={self.pe_ratio} eps={self.eps}>"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. watchlists
+# User-named instrument watchlists (ordered, per-user)
+# ---------------------------------------------------------------------------
+
+class Watchlist(Base):
+    __tablename__ = "watchlists"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    items: Mapped[list["WatchlistItem"]] = relationship(
+        "WatchlistItem", back_populates="watchlist", cascade="all, delete-orphan",
+        order_by="WatchlistItem.display_order",
+    )
+    user: Mapped["User"] = relationship("User", back_populates="watchlists")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_watchlist_user_name"),
+        Index("ix_watchlists_user_id", "user_id"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Watchlist name={self.name!r} user_id={self.user_id}>"
+
+
+# ---------------------------------------------------------------------------
+# 9. watchlist_items
+# Individual instruments within a watchlist
+# ---------------------------------------------------------------------------
+
+class WatchlistItem(Base):
+    __tablename__ = "watchlist_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    watchlist_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("watchlists.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    instrument_token: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tradingsymbol: Mapped[str] = mapped_column(String(50), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(10), nullable=False)
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("NOW()"),
+    )
+
+    watchlist: Mapped["Watchlist"] = relationship("Watchlist", back_populates="items")
+
+    __table_args__ = (
+        UniqueConstraint("watchlist_id", "instrument_token", name="uq_watchlist_item_token"),
+        Index("ix_watchlist_items_watchlist_id", "watchlist_id"),
+        Index("ix_watchlist_items_user_id", "user_id"),
+    )

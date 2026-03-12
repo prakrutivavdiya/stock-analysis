@@ -4,6 +4,7 @@ import AppShell from "./components/AppShell";
 import Dashboard from "./pages/Dashboard";
 import Charts from "./pages/Charts";
 import KPIBuilder from "./pages/KPIBuilder";
+import KPIGuide from "./pages/KPIGuide";
 import Orders from "./pages/Orders";
 import AuditLog from "./pages/AuditLog";
 import Settings from "./pages/Settings";
@@ -37,6 +38,10 @@ export const router = createBrowserRouter([
       {
         path: "kpis",
         Component: KPIBuilder,
+      },
+      {
+        path: "kpis/guide",
+        Component: KPIGuide,
       },
       {
         path: "orders",

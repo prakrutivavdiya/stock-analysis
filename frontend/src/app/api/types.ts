@@ -42,6 +42,7 @@ export interface RefreshResponse {
 export interface ApiHolding {
   tradingsymbol: string;
   exchange: string;
+  isin: string;
   instrument_token: number;
   quantity: number;
   t1_quantity: number;
@@ -74,6 +75,7 @@ export interface ApiPosition {
   tradingsymbol: string;
   exchange: string;
   product: string;
+  instrument_token: number;
   quantity: number;
   average_price: number;
   last_price: number;
@@ -208,15 +210,18 @@ export interface ApiGTT {
   tradingsymbol: string;
   exchange: string;
   trigger_type: "single" | "two-leg";
+  transaction_type: "BUY" | "SELL";
+  product: string;
+  quantity: number;
+  status: "ACTIVE" | "TRIGGERED" | "CANCELLED";
+  // single-leg
   trigger_value: number | null;
   limit_price: number | null;
+  // two-leg
   upper_trigger_value: number | null;
   upper_limit_price: number | null;
   lower_trigger_value: number | null;
   lower_limit_price: number | null;
-  quantity: number;
-  transaction_type: "BUY" | "SELL";
-  status: "ACTIVE" | "TRIGGERED" | "CANCELLED";
 }
 
 export interface GTTListResponse {
@@ -353,6 +358,32 @@ export interface InstrumentDetail {
   tick_size: number;
   expiry: string | null;
   strike: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Watchlist
+// ---------------------------------------------------------------------------
+
+export interface WatchlistItemOut {
+  id: string;
+  watchlist_id: string;
+  instrument_token: number;
+  tradingsymbol: string;
+  exchange: string;
+  display_order: number;
+  created_at: string;
+}
+
+export interface WatchlistOut {
+  id: string;
+  name: string;
+  display_order: number;
+  created_at: string;
+  items: WatchlistItemOut[];
+}
+
+export interface WatchlistsResponse {
+  watchlists: WatchlistOut[];
 }
 
 // ---------------------------------------------------------------------------

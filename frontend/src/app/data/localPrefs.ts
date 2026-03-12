@@ -254,6 +254,17 @@ export const notifyOnGTTTrigger = {
   },
 };
 
+// TR-17: Global paper trade mode — when on, all orders are simulated
+export const paperTradeMode = {
+  key: "pref_paper_trade_mode",
+  get(): boolean {
+    return _get("pref_paper_trade_mode") === "true";
+  },
+  set(v: boolean): void {
+    _set("pref_paper_trade_mode", String(v));
+  },
+};
+
 // AU-05 / US-095: Kite session expiry warning cannot be permanently suppressed
 // This pref is read-only true from a product perspective but stored for completeness
 export const notifyOnKiteSessionExpiry = {

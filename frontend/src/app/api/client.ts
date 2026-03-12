@@ -10,6 +10,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly detail?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "ApiError";
@@ -42,24 +43,52 @@ export async function apiFetch<T>(
   }
 
   if (response.status === 401) {
-    window.location.href = "/login";
-    // Throw so callers see this as an error, even though we're redirecting
+    // Dev bypass: skip redirect so "Skip login" mode keeps working
+    if (!(import.meta.env.DEV && sessionStorage.getItem("devBypass") === "true")) {
+      window.location.href = "/login";
+    }
     throw new ApiError("Unauthorized", 401);
+  }
+
+  // SESSION-EXPIRE: 403 means the Kite access token expired mid-session.
+  // Notify the app shell to show the re-auth banner without forcing a redirect.
+  if (response.status === 403) {
+    window.dispatchEvent(new CustomEvent("kite-session-expired"));
+    throw new ApiError("Kite session expired — please re-authenticate", 403);
+  }
+
+  if (response.status === 429) {
+    // Rate limit hit — show a persistent warning and stop the call chain
+    import("sonner").then(({ toast }) =>
+      toast.warning("Too many requests — please wait a moment before retrying.", {
+        id: "rate-limit",
+        duration: 6000,
+      })
+    );
+    throw new ApiError("Rate limit exceeded", 429);
   }
 
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
+    let detail: Record<string, unknown> | undefined;
     try {
       const body = await response.json();
       if (body?.detail) {
-        message = typeof body.detail === "string"
-          ? body.detail
-          : JSON.stringify(body.detail);
+        if (typeof body.detail === "string") {
+          message = body.detail;
+        } else {
+          detail = body.detail as Record<string, unknown>;
+          const err = detail?.error as Record<string, unknown> | undefined;
+          message = (err?.message as string) ?? JSON.stringify(body.detail);
+          // REQUEST-ID: append request_id to the message so it surfaces in toasts
+          const requestId = err?.request_id as string | undefined;
+          if (requestId) message += ` (ref: ${requestId})`;
+        }
       }
     } catch {
       // ignore JSON parse failures; use default message
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, detail);
   }
 
   // 204 No Content — return empty object cast to T

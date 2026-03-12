@@ -14,14 +14,40 @@ import type { MeResponse } from '../../app/api/types'
 // Mutable variable to control user state per test
 let currentUser: MeResponse | null = null
 
-vi.mock('../../app/data/store', () => ({
-  useAppStore: vi.fn((selector: (s: object) => unknown) =>
-    selector({
+vi.mock('../../app/data/store', () => {
+  const useAppStore: any = vi.fn((selector?: (s: object) => unknown) => {
+    const state = {
       user: currentUser,
       setUser: vi.fn(),
       clearUser: vi.fn(),
-    })
-  ),
+      holdings: { data: [], fetchedAt: Date.now() },
+      livePrices: {},
+      watchlists: { data: [], fetchedAt: 0 },
+      activeWatchlistId: null,
+      setLivePrices: vi.fn(),
+      setWatchlists: vi.fn(),
+      setActiveWatchlistId: vi.fn(),
+      isWatchlistsFresh: vi.fn(() => true),
+    }
+    return selector ? selector(state) : state
+  })
+  useAppStore.subscribe = vi.fn(() => () => {})
+  return { useAppStore }
+})
+
+// Stub the WebSocket hook so AppShell doesn't open a real WS connection in tests
+vi.mock('../../app/api/quotes', () => ({
+  useQuotesSocket: vi.fn(),
+}))
+
+// Stub WatchlistPanel — its own tests cover its behavior
+vi.mock('../../app/components/WatchlistPanel', () => ({
+  default: vi.fn(() => null),
+}))
+
+// Stub instrument search used by InstrumentSearch in the topbar
+vi.mock('../../app/api/instruments', () => ({
+  searchInstruments: vi.fn(() => Promise.resolve({ results: [] })),
 }))
 
 vi.mock('../../app/api/auth', () => ({

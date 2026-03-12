@@ -187,6 +187,8 @@ async def compute_indicators(
     from_date: str = Query(...),
     to_date: str = Query(...),
     indicators: str = Query(..., description="Comma-separated specs e.g. EMA_20,RSI_14,MACD,BB_20"),
+    tradingsymbol: str = Query(default=""),
+    exchange: str = Query(default="NSE"),
 ) -> dict:
     """
     Compute indicator time-series for the Lightweight Charts renderer.
@@ -227,15 +229,55 @@ async def compute_indicators(
     )).scalars().all()
 
     if not rows:
+        from backend.data_source import set_ohlcv_source
+        # Resolve tradingsymbol: query param > cached row > token string
+        sym = tradingsymbol or (rows[0].tradingsymbol if rows else "") or str(instrument_token)
+        exch = exchange
+
+        raw = None
         try:
             raw = await asyncio.to_thread(
                 kite.historical_data, instrument_token, from_dt, to_dt, interval
             )
+            set_ohlcv_source("kite")
+        except Exception as kite_exc:
+            exc_str = str(kite_exc).lower()
+            if sym != str(instrument_token) and (
+                "permission" in exc_str or "403" in exc_str or "subscription" in exc_str
+            ):
+                try:
+                    from backend.routers.historical import _fetch_from_yfinance
+                    candles = await _fetch_from_yfinance(
+                        db, instrument_token, sym, exch, interval, from_dt, to_dt
+                    )
+                    # Re-query cache now populated by yfinance
+                    rows = (await db.execute(
+                        select(OHLCVCache)
+                        .where(
+                            OHLCVCache.instrument_token == instrument_token,
+                            OHLCVCache.interval == interval,
+                            OHLCVCache.candle_timestamp >= from_dt,
+                            OHLCVCache.candle_timestamp <= to_dt,
+                        )
+                        .order_by(OHLCVCache.candle_timestamp)
+                    )).scalars().all()
+                except Exception:
+                    raise HTTPException(status_code=502, detail=f"Kite API error: {kite_exc}") from kite_exc
+            else:
+                raise HTTPException(status_code=502, detail=f"Kite API error: {kite_exc}") from kite_exc
+
+        if raw:
             df = pd.DataFrame(raw)
             if not df.empty:
                 df.rename(columns={"date": "timestamp"}, inplace=True)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Kite API error: {exc}") from exc
+        elif rows:
+            df = pd.DataFrame([
+                {"timestamp": r.candle_timestamp, "open": float(r.open), "high": float(r.high),
+                 "low": float(r.low), "close": float(r.close), "volume": r.volume}
+                for r in rows
+            ])
+        else:
+            return {}
     else:
         df = pd.DataFrame([
             {"timestamp": r.candle_timestamp, "open": float(r.open),

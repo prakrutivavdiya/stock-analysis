@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
-import { Plus, Pencil, Trash2, AlertTriangle, X } from "lucide-react";
+import { useNavigate } from "react-router";
+import { Plus, Pencil, Trash2, AlertTriangle, X, BookOpen } from "lucide-react";
 import { toast } from "sonner";
 import type { KPI } from "../data/mockData";
 import { Switch } from "../components/ui/switch";
@@ -192,6 +193,7 @@ const EMPTY_EDIT: EditState = {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function KPIBuilder() {
+  const navigate = useNavigate();
   const [kpis, setKpis] = useState<KPI[]>([]);
   const [editOpen, setEditOpen] = useState(false);
   const [edit, setEdit] = useState<EditState>(EMPTY_EDIT);
@@ -419,13 +421,23 @@ export default function KPIBuilder() {
             Custom indicators computed per holding
           </p>
         </div>
-        <button
-          onClick={openNew}
-          className="flex items-center gap-1.5 px-4 py-2 bg-[#FF6600] hover:bg-[#ff7700] text-white text-sm font-medium rounded transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Add KPI
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => navigate("/kpis/guide")}
+            className="flex items-center gap-1.5 px-3 py-2 border border-[#2a2a2a] hover:border-[#3a3a3a] text-muted-foreground hover:text-foreground text-sm rounded transition-colors"
+            title="Open formula reference guide"
+          >
+            <BookOpen className="w-4 h-4" />
+            Formula Guide
+          </button>
+          <button
+            onClick={openNew}
+            className="flex items-center gap-1.5 px-4 py-2 bg-[#FF6600] hover:bg-[#ff7700] text-white text-sm font-medium rounded transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Add KPI
+          </button>
+        </div>
       </div>
 
       {/* KPI table */}
