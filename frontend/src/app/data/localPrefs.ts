@@ -81,7 +81,7 @@ export const theme = {
 // Values match TradingView interval codes used in Charts.tsx
 // ---------------------------------------------------------------------------
 
-export type DefaultInterval = "5" | "15" | "30" | "60" | "D";
+export type DefaultInterval = "5" | "15" | "30" | "60" | "120" | "240" | "D" | "W" | "M";
 
 export const defaultInterval = {
   key: "pref_default_interval",

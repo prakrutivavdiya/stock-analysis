@@ -395,9 +395,20 @@ export interface HoldingsSortPreference {
   direction: "asc" | "desc";
 }
 
+export interface ChartPreferences {
+  interval: string;
+  chart_type: string;
+  active_indicators: string[];
+}
+
+export interface ChartPreferencesResponse {
+  chart_prefs: ChartPreferences;
+}
+
 export interface UIPreferences {
   visible_holdings_columns: string[];
   holdings_sort: HoldingsSortPreference;
+  chart_prefs?: ChartPreferences;
 }
 
 export interface UIPreferencesResponse {

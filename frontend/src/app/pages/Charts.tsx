@@ -17,18 +17,23 @@ import { useAppStore } from "../data/store";
 import { searchInstruments } from "../api/instruments";
 import { apiFetch } from "../api/client";
 import type { InstrumentResult } from "../api/types";
+import { getChartPreferences, saveChartPreferences } from "../api/preferences";
 
 // ---------------------------------------------------------------------------
 // Intervals & chart types
 // ---------------------------------------------------------------------------
 
 const INTERVALS = [
-  { label: "5m",  value: "5",  backend: "5minute"  },
-  { label: "15m", value: "15", backend: "15minute" },
-  { label: "30m", value: "30", backend: "30minute" },
-  { label: "1hr", value: "60", backend: "60minute" },
-  { label: "D",   value: "D",  backend: "day"      },
-] as const;
+  { label: "5m",  value: "5",   backend: "5minute"  },
+  { label: "15m", value: "15",  backend: "15minute" },
+  { label: "30m", value: "30",  backend: "30minute" },
+  { label: "1hr", value: "60",  backend: "60minute" },
+  { label: "2hr", value: "120", backend: "60minute" }, // aggregated client-side
+  { label: "4hr", value: "240", backend: "60minute" }, // aggregated client-side
+  { label: "D",   value: "D",   backend: "day"      },
+  { label: "W",   value: "W",   backend: "day"      }, // aggregated client-side
+  { label: "M",   value: "M",   backend: "day"      }, // aggregated client-side
+];
 
 const CHART_TYPES = [
   { label: "Candles", value: "candle" },
@@ -112,12 +117,14 @@ interface CandleCache {
   candles: CandleData[];
 }
 
-export function getDateRange(backend: string): { from: string; to: string } {
+export function getDateRange(backend: string, interval?: string): { from: string; to: string } {
   const now = new Date();
   const to  = now.toISOString().slice(0, 10);
   const from = new Date(now);
-  if (backend === "day") from.setFullYear(from.getFullYear() - 1);
-  else                   from.setDate(from.getDate() - 60);
+  if      (interval === "M") from.setFullYear(from.getFullYear() - 5);
+  else if (interval === "W") from.setFullYear(from.getFullYear() - 3);
+  else if (backend === "day") from.setFullYear(from.getFullYear() - 1);
+  else                        from.setDate(from.getDate() - 60);
   return { from: from.toISOString().slice(0, 10), to };
 }
 
@@ -146,6 +153,50 @@ function applyPeriod(key: string, period: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Client-side candle aggregation helpers
+// ---------------------------------------------------------------------------
+
+function aggregateToNMinutes(candles: CandleData[], minutes: number): CandleData[] {
+  const ms = minutes * 60 * 1000;
+  const buckets = new Map<number, CandleData>();
+  for (const c of candles) {
+    const t = new Date(c.timestamp).getTime();
+    const key = Math.floor(t / ms) * ms;
+    const ex = buckets.get(key);
+    if (!ex) buckets.set(key, { ...c, timestamp: new Date(key).toISOString() });
+    else { ex.high = Math.max(ex.high, c.high); ex.low = Math.min(ex.low, c.low); ex.close = c.close; ex.volume += c.volume; }
+  }
+  return [...buckets.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
+function aggregateToWeekly(candles: CandleData[]): CandleData[] {
+  const buckets = new Map<string, CandleData>();
+  for (const c of candles) {
+    const d = new Date(c.timestamp);
+    const day = d.getUTCDay();
+    const monday = new Date(d);
+    monday.setUTCDate(d.getUTCDate() - (day === 0 ? 6 : day - 1));
+    const key = monday.toISOString().slice(0, 10);
+    const ex = buckets.get(key);
+    if (!ex) buckets.set(key, { ...c, timestamp: key + "T00:00:00.000Z" });
+    else { ex.high = Math.max(ex.high, c.high); ex.low = Math.min(ex.low, c.low); ex.close = c.close; ex.volume += c.volume; }
+  }
+  return [...buckets.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
+function aggregateToMonthly(candles: CandleData[]): CandleData[] {
+  const buckets = new Map<string, CandleData>();
+  for (const c of candles) {
+    const d = new Date(c.timestamp);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
+    const ex = buckets.get(key);
+    if (!ex) buckets.set(key, { ...c, timestamp: key + "T00:00:00.000Z" });
+    else { ex.high = Math.max(ex.high, c.high); ex.low = Math.min(ex.low, c.low); ex.close = c.close; ex.volume += c.volume; }
+  }
+  return [...buckets.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -160,6 +211,15 @@ export default function Charts() {
   const [search,    setSearch]    = useState("");
 
   const [activeIndicators, setActiveIndicators] = useState<string[]>([]);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const saveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleSave = (prefs: { interval: string; chart_type: string; active_indicators: string[] }) => {
+    if (saveDebounceRef.current) clearTimeout(saveDebounceRef.current);
+    saveDebounceRef.current = setTimeout(() => {
+      saveChartPreferences(prefs).catch(() => { /* silently ignore */ });
+    }, 800);
+  };
   const [indicatorSearch,  setIndicatorSearch]  = useState("");
   const [showPanel,        setShowPanel]        = useState(false);
   // IND-PARAMS: inline period editing for active indicator badges
@@ -186,9 +246,11 @@ export default function Charts() {
     : holdingSymbols;
 
   const toggleIndicator = (key: string) =>
-    setActiveIndicators((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
-    );
+    setActiveIndicators((prev) => {
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+      scheduleSave({ interval, chart_type: chartType, active_indicators: next });
+      return next;
+    });
 
   const selectSymbol = (sym: string, exch: string) => {
     setSymbol(sym); setExchange(exch); setSearch("");
@@ -206,9 +268,21 @@ export default function Charts() {
     return () => document.removeEventListener("mousedown", handler);
   }, [showPanel]);
 
+  // Load per-user chart prefs from the backend once on mount
+  useEffect(() => {
+    getChartPreferences()
+      .then(({ chart_prefs }) => {
+        setInterval(chart_prefs.interval ?? "D");
+        setChartType(chart_prefs.chart_type ?? "candle");
+        setActiveIndicators(chart_prefs.active_indicators ?? []);
+      })
+      .catch(() => { /* silently keep defaults */ })
+      .finally(() => setPrefsLoaded(true));
+  }, []);
+
   // ── Main chart effect ──────────────────────────────────────────────────────
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || !prefsLoaded) return;
     const container  = containerRef.current;
     const backendInterval = INTERVALS.find((iv) => iv.value === interval)?.backend ?? "day";
     const isIntraday = backendInterval !== "day";
@@ -246,7 +320,7 @@ export default function Charts() {
             return;
           }
           token        = inst.instrument_token;
-          ({ from, to } = getDateRange(backendInterval));
+          ({ from, to } = getDateRange(backendInterval, interval));
           const qs = new URLSearchParams({
             interval: backendInterval, from_date: from, to_date: to,
             tradingsymbol: inst.tradingsymbol, exchange: inst.exchange,
@@ -255,6 +329,11 @@ export default function Charts() {
             `/historical/${token}?${qs}`
           );
           candles = res.candles;
+          // Apply client-side aggregation for synthetic intervals
+          if      (interval === "120") candles = aggregateToNMinutes(candles, 120);
+          else if (interval === "240") candles = aggregateToNMinutes(candles, 240);
+          else if (interval === "W")   candles = aggregateToWeekly(candles);
+          else if (interval === "M")   candles = aggregateToMonthly(candles);
           candleCacheRef.current = { symbol, exchange, interval, token, from, to, candles };
         }
 
@@ -447,14 +526,14 @@ export default function Charts() {
       chartRef.current?.remove();  chartRef.current = null;
       roRef.current?.disconnect(); roRef.current    = null;
     };
-  }, [symbol, exchange, interval, chartType, activeIndicators, retryKey]);
+  }, [symbol, exchange, interval, chartType, activeIndicators, retryKey, prefsLoaded]);
 
   // ── Live candle updates from KiteTicker ───────────────────────────────────
   useEffect(() => {
     const backendInterval = INTERVALS.find((iv) => iv.value === interval)?.backend ?? "day";
     const isIntraday = backendInterval !== "day";
-    // Parse interval minutes from backend string, e.g. "5minute" → 5
-    const intervalMins = isIntraday ? parseInt(backendInterval) : 0;
+    // Use the interval value directly (e.g. "120" → 120 min for 2hr), not the backend string
+    const intervalMins = isIntraday ? parseInt(interval) : 0;
 
     return useAppStore.subscribe((state, prevState) => {
       const token = tokenRef.current ?? -1;
@@ -524,7 +603,10 @@ export default function Charts() {
           {/* Chart type */}
           <div className="flex items-center gap-1 border-r border-[#2a2a2a] pr-3 mr-1">
             {CHART_TYPES.map((ct) => (
-              <button key={ct.value} onClick={() => setChartType(ct.value)}
+              <button key={ct.value} onClick={() => {
+                setChartType(ct.value);
+                scheduleSave({ interval, chart_type: ct.value, active_indicators: activeIndicators });
+              }}
                 className={`px-2.5 py-1 text-xs rounded transition-colors ${chartType === ct.value ? "bg-[#FF6600] text-white" : "text-muted-foreground hover:text-foreground hover:bg-[#2a2a2a]"}`}>
                 {ct.label}
               </button>
@@ -602,7 +684,10 @@ export default function Charts() {
           {/* Intervals */}
           <div className="flex items-center gap-1 ml-auto">
             {INTERVALS.map((iv) => (
-              <button key={iv.value} onClick={() => setInterval(iv.value)}
+              <button key={iv.value} onClick={() => {
+                setInterval(iv.value);
+                scheduleSave({ interval: iv.value, chart_type: chartType, active_indicators: activeIndicators });
+              }}
                 className={`px-3 py-1 text-xs rounded transition-colors ${interval === iv.value ? "bg-[#FF6600] text-white" : "text-muted-foreground hover:text-foreground hover:bg-[#2a2a2a]"}`}>
                 {iv.label}
               </button>
@@ -632,9 +717,11 @@ export default function Charts() {
                         onBlur={() => {
                           const n = parseInt(editingPeriod.value, 10);
                           if (n > 0) {
-                            setActiveIndicators((prev) =>
-                              prev.map((k) => k === key ? applyPeriod(k, n) : k)
-                            );
+                            setActiveIndicators((prev) => {
+                              const next = prev.map((k) => k === key ? applyPeriod(k, n) : k);
+                              scheduleSave({ interval, chart_type: chartType, active_indicators: next });
+                              return next;
+                            });
                           }
                           setEditingPeriod(null);
                         }}

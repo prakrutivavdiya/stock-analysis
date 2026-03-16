@@ -188,24 +188,22 @@ describe('Orders — L-05: oversell warning', () => {
   it('shows oversell error when CNC SELL quantity exceeds holdings', async () => {
     renderOrders()
 
-    // Switch to SELL (button text is "Sell", matched case-insensitively)
+    // Switch to SELL
     const sellBtn = screen.queryByRole('button', { name: /^sell$/i })
     if (sellBtn) await userEvent.click(sellBtn)
 
-    // Select INFY from the symbol <select> (not an <input>)
-    const symbolSelect = findSymbolSelect()
-    if (symbolSelect) {
-      await userEvent.selectOptions(symbolSelect, 'INFY')
-    }
+    // Select INFY via the holdings quick-select button (Order form uses InstrumentSearch, not <select>)
+    const allButtons = screen.getAllByRole('button')
+    const infyBtn = allButtons.find((b) => b.textContent?.trim() === 'INFY')
+    if (infyBtn) await userEvent.click(infyBtn)
 
-    // Qty input has placeholder "0" (not "qty" or "quantity")
+    // Qty input has placeholder "0"
     const qtyInput = screen.queryByPlaceholderText('0')
     if (qtyInput) {
       await userEvent.clear(qtyInput)
       await userEvent.type(qtyInput, '15') // 15 > 10 held — triggers CNC oversell error
 
       await waitFor(() => {
-        // CNC hard block message: "Cannot sell X — you only hold Y shares."
         expect(
           screen.queryByText(/cannot sell|only hold|does not allow short/i)
         ).toBeInTheDocument()
@@ -240,13 +238,12 @@ describe('Orders — L-06: price deviation warning', () => {
   it('shows warning when limit price deviates >20% from LTP', async () => {
     renderOrders()
 
-    // Select INFY so LTP (1500) is available; default orderType is LIMIT
-    const symbolSelect = findSymbolSelect()
-    if (symbolSelect) {
-      await userEvent.selectOptions(symbolSelect, 'INFY')
-    }
+    // Select INFY via the holdings quick-select button so LTP (1500) is available
+    const allButtons = screen.getAllByRole('button')
+    const infyBtn = allButtons.find((b) => b.textContent?.trim() === 'INFY')
+    if (infyBtn) await userEvent.click(infyBtn)
 
-    // Price input has placeholder "0.00" (not "limit price" or "price")
+    // Price input has placeholder "0.00"; default orderType is LIMIT
     const priceInput = screen.queryByPlaceholderText('0.00')
     if (priceInput) {
       await userEvent.clear(priceInput)

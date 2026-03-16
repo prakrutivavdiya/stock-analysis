@@ -6,11 +6,13 @@ import type { InstrumentResult } from "../api/types";
 interface InstrumentSearchProps {
   onSelect: (instrument: InstrumentResult) => void;
   placeholder?: string;
+  className?: string;
 }
 
 export default function InstrumentSearch({
   onSelect,
   placeholder = "Search instruments…",
+  className,
 }: InstrumentSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<InstrumentResult[]>([]);
@@ -84,7 +86,7 @@ export default function InstrumentSearch({
   };
 
   return (
-    <div ref={containerRef} className="relative w-60">
+    <div ref={containerRef} className={`relative ${className ?? "w-60"}`}>
       <div className="flex items-center bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 gap-2 h-8 focus-within:border-[#FF6600]/50">
         <Search className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
         <input

@@ -51,6 +51,19 @@ vi.mock('../../app/api/client', () => ({
   },
 }))
 
+vi.mock('../../app/api/preferences', () => ({
+  getChartPreferences: vi.fn(() =>
+    Promise.resolve({ chart_prefs: { interval: 'D', chart_type: 'candle', active_indicators: [] } })
+  ),
+  saveChartPreferences: vi.fn(() =>
+    Promise.resolve({ chart_prefs: { interval: 'D', chart_type: 'candle', active_indicators: [] } })
+  ),
+  getPreferences: vi.fn(() =>
+    Promise.resolve({ preferences: { visible_holdings_columns: [], holdings_sort: { column: 'symbol', direction: 'asc' } } })
+  ),
+  savePreferences: vi.fn(() => Promise.resolve({})),
+}))
+
 // Mutable store state for test control
 let mockHoldingsData = [
   { symbol: 'INFY', exchange: 'NSE' },
@@ -98,11 +111,12 @@ beforeEach(() => {
     { symbol: 'INFY', exchange: 'NSE' },
     { symbol: 'HDFCBANK', exchange: 'NSE' },
   ]
+  localStorage.clear()
 })
 
-// ── M-06: Interval buttons (no W) ────────────────────────────────────────────
+// ── Interval buttons ──────────────────────────────────────────────────────────
 
-describe('Charts — M-06: interval buttons', () => {
+describe('Charts — interval buttons', () => {
   it('shows 5m interval button', () => {
     renderCharts()
     expect(screen.getByRole('button', { name: '5m' })).toBeInTheDocument()
@@ -123,22 +137,36 @@ describe('Charts — M-06: interval buttons', () => {
     expect(screen.getByRole('button', { name: '1hr' })).toBeInTheDocument()
   })
 
+  it('shows 2hr interval button', () => {
+    renderCharts()
+    expect(screen.getByRole('button', { name: '2hr' })).toBeInTheDocument()
+  })
+
+  it('shows 4hr interval button', () => {
+    renderCharts()
+    expect(screen.getByRole('button', { name: '4hr' })).toBeInTheDocument()
+  })
+
   it('shows D (daily) interval button', () => {
     renderCharts()
     expect(screen.getByRole('button', { name: 'D' })).toBeInTheDocument()
   })
 
-  it('does NOT show W (weekly) interval button — M-06 fix', () => {
+  it('shows W (weekly) interval button', () => {
     renderCharts()
-    expect(screen.queryByRole('button', { name: 'W' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^W$/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'W' })).toBeInTheDocument()
   })
 
-  it('exactly 5 interval buttons are rendered', () => {
+  it('shows M (monthly) interval button', () => {
     renderCharts()
-    const intervals = ['5m', '15m', '30m', '1hr', 'D']
+    expect(screen.getByRole('button', { name: 'M' })).toBeInTheDocument()
+  })
+
+  it('exactly 9 interval buttons are rendered', () => {
+    renderCharts()
+    const intervals = ['5m', '15m', '30m', '1hr', '2hr', '4hr', 'D', 'W', 'M']
     const present = intervals.filter((iv) => screen.queryByRole('button', { name: iv }))
-    expect(present.length).toBe(5)
+    expect(present.length).toBe(9)
   })
 
   it('D interval is selected by default', () => {

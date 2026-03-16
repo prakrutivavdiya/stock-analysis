@@ -8,6 +8,8 @@ import { getHoldings, mapHolding } from "../api/portfolio";
 import { getOrders, placeOrder, modifyOrder as apiModifyOrder, cancelOrder, mapOrder } from "../api/orders";
 import { getGtts, placeGtt, modifyGtt as apiModifyGtt, deleteGtt, mapGtt } from "../api/gtt";
 import { ApiError } from "../api/client";
+import InstrumentSearch from "../components/InstrumentSearch";
+import type { InstrumentResult } from "../api/types";
 
 type Tab = "orders" | "gtt";
 type TxType = "BUY" | "SELL";
@@ -185,6 +187,12 @@ export default function Orders() {
   const [cdslPending, setCdslPending] = useState<CdslPending | null>(null);
   const [cdslAuthUrl, setCdslAuthUrl] = useState<string | null>(null);
 
+  // Instrument selection state (supports any market instrument, not just holdings)
+  const [selectedInstrument, setSelectedInstrument] = useState<InstrumentResult | null>(null);
+  const [selectedGttInstrument, setSelectedGttInstrument] = useState<InstrumentResult | null>(null);
+  const [gttExchange, setGttExchange] = useState("NSE");
+  const [gttLastPrice, setGttLastPrice] = useState(0);
+
   const [sortKey, setSortKey] = useState<SortKey>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -196,15 +204,18 @@ export default function Orders() {
   const holdings = storeHoldings.data ?? [];
   const livePrices = useAppStore((s) => s.livePrices);
 
-  // Load data on mount
+  // Load data on mount + poll orders every 5 s while page is open
+  // (Kite has no WebSocket for order status — polling is the only option)
   useEffect(() => {
-    // Fetch orders
-    getOrders()
-      .then((res) => setOrders(res.orders.map(mapOrder)))
-      .catch((err: unknown) => {
-        if (err instanceof ApiError && err.status !== 401)
-          toast.error(err.message || "Failed to load orders");
-      });
+    const fetchOrders = () =>
+      getOrders()
+        .then((res) => setOrders(res.orders.map(mapOrder)))
+        .catch((err: unknown) => {
+          if (err instanceof ApiError && err.status !== 401)
+            toast.error(err.message || "Failed to load orders");
+        });
+
+    fetchOrders();
 
     // Fetch GTTs
     getGtts()
@@ -222,6 +233,9 @@ export default function Orders() {
           // Holdings are used for convenience; don't block the page on failure
         });
     }
+
+    const interval = setInterval(fetchOrders, 5_000);
+    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -479,6 +493,7 @@ export default function Orders() {
       });
       toast.success(`Order placed — ${orderForm.txType} ${orderForm.symbol}`);
       setOrderForm(EMPTY_ORDER);
+      setSelectedInstrument(null);
       setSlippageAcked(false);
       // Refresh orders list
       getOrders()
@@ -606,12 +621,13 @@ export default function Orders() {
   const handlePlaceGtt = async () => {
     if (!gttForm.symbol || !gttForm.quantity) return;
     const h = holdings.find((hh) => hh.symbol === gttForm.symbol);
-    const lastPrice = (h?.instrumentToken != null && livePrices[h.instrumentToken]?.ltp) || h?.ltp || 0;
+    const lastPrice = (h?.instrumentToken != null && livePrices[h.instrumentToken]?.ltp) || h?.ltp || gttLastPrice;
+    const exchange = gttExchange || h?.exchange || "NSE";
     try {
       if (gttForm.gttType === "single") {
         await placeGtt({
           tradingsymbol: gttForm.symbol,
-          exchange: h?.exchange ?? "NSE",
+          exchange,
           transaction_type: gttForm.txType,
           product: gttForm.product,
           trigger_type: "single",
@@ -623,7 +639,7 @@ export default function Orders() {
       } else {
         await placeGtt({
           tradingsymbol: gttForm.symbol,
-          exchange: h?.exchange ?? "NSE",
+          exchange,
           transaction_type: gttForm.txType,
           product: gttForm.product,
           trigger_type: "two-leg",
@@ -638,6 +654,9 @@ export default function Orders() {
       }
       toast.success("GTT placed");
       setGttForm(EMPTY_GTT);
+      setSelectedGttInstrument(null);
+      setGttExchange("NSE");
+      setGttLastPrice(0);
       getGtts()
         .then((res) => setGttOrders(res.gtts.map(mapGtt)))
         .catch(() => {});
@@ -754,30 +773,69 @@ export default function Orders() {
               </div>
 
               {/* Symbol */}
-              <Field label="Symbol" tooltip="The stock you want to buy or sell.">
-                <select
-                  value={orderForm.symbol}
-                  onChange={(e) => {
-                    const h = holdings.find((hh) => hh.symbol === e.target.value);
-                    const exch = h?.exchange ?? "NSE";
+              <div className="space-y-1.5">
+                <label className="text-xs text-muted-foreground">Symbol</label>
+                <InstrumentSearch
+                  onSelect={(inst) => {
+                    setSelectedInstrument(inst);
                     setOrderForm((f) => ({
                       ...f,
-                      symbol: e.target.value,
-                      exchange: exch,
-                      // auto-correct product when exchange type changes
-                      product: defaultProduct(exch),
+                      symbol: inst.tradingsymbol,
+                      exchange: inst.exchange,
+                      product: defaultProduct(inst.exchange),
                     }));
                   }}
-                  className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#FF6600]"
-                >
-                  <option value="">Select symbol…</option>
-                  {holdings.map((h) => (
-                    <option key={h.symbol} value={h.symbol}>
-                      {h.symbol} ({h.exchange})
-                    </option>
-                  ))}
-                </select>
-              </Field>
+                  placeholder="Search any symbol…"
+                  className="w-full"
+                />
+                {orderForm.symbol && (
+                  <div className="flex items-center justify-between px-2 py-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-sm">
+                    <div className="flex items-baseline gap-1.5 min-w-0">
+                      <span className="font-medium">{orderForm.symbol}</span>
+                      {selectedInstrument?.name && (
+                        <span className="text-xs text-muted-foreground truncate">{selectedInstrument.name}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-xs text-muted-foreground">{orderForm.exchange}</span>
+                      <button
+                        onClick={() => { setOrderForm((f) => ({ ...f, symbol: "", exchange: "NSE", product: "CNC" })); setSelectedInstrument(null); }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {holdings.length > 0 && (
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">From holdings:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {holdings.slice(0, 8).map((h) => (
+                        <button
+                          key={h.symbol}
+                          onClick={() => {
+                            setSelectedInstrument(null);
+                            setOrderForm((f) => ({
+                              ...f,
+                              symbol: h.symbol,
+                              exchange: h.exchange,
+                              product: defaultProduct(h.exchange),
+                            }));
+                          }}
+                          className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                            orderForm.symbol === h.symbol
+                              ? "border-[#FF6600] text-[#FF6600] bg-[#FF6600]/10"
+                              : "border-[#2a2a2a] text-muted-foreground hover:border-[#3a3a3a] hover:text-foreground"
+                          }`}
+                        >
+                          {h.symbol}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Buy / Sell — no label, same as Kite */}
               <div className="flex rounded overflow-hidden border border-[#2a2a2a]">
@@ -946,28 +1004,74 @@ export default function Orders() {
           ) : (
             // GTT form
             <div className="space-y-3">
-              <Field label="Symbol" tooltip="The stock to set a Good Till Triggered order on.">
-                <select
-                  value={gttForm.symbol}
-                  onChange={(e) => {
-                    const h = holdings.find((hh) => hh.symbol === e.target.value);
-                    const exch = h?.exchange ?? "NSE";
+              <div className="space-y-1.5">
+                <label className="text-xs text-muted-foreground">Symbol</label>
+                <InstrumentSearch
+                  onSelect={(inst) => {
+                    const h = holdings.find((hh) => hh.symbol === inst.tradingsymbol);
+                    const lp = (h?.instrumentToken != null && livePrices[h.instrumentToken]?.ltp) || h?.ltp || 0;
+                    setSelectedGttInstrument(inst);
+                    setGttExchange(inst.exchange);
+                    setGttLastPrice(lp);
                     setGttForm((f) => ({
                       ...f,
-                      symbol: e.target.value,
-                      product: defaultProduct(exch),
+                      symbol: inst.tradingsymbol,
+                      product: defaultProduct(inst.exchange),
                     }));
                   }}
-                  className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#FF6600]"
-                >
-                  <option value="">Select symbol…</option>
-                  {holdings.map((h) => (
-                    <option key={h.symbol} value={h.symbol}>
-                      {h.symbol}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+                  placeholder="Search any symbol…"
+                  className="w-full"
+                />
+                {gttForm.symbol && (
+                  <div className="flex items-center justify-between px-2 py-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded text-sm">
+                    <div className="flex items-baseline gap-1.5 min-w-0">
+                      <span className="font-medium">{gttForm.symbol}</span>
+                      {selectedGttInstrument?.name && (
+                        <span className="text-xs text-muted-foreground truncate">{selectedGttInstrument.name}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-xs text-muted-foreground">{gttExchange}</span>
+                      <button
+                        onClick={() => { setGttForm((f) => ({ ...f, symbol: "" })); setSelectedGttInstrument(null); setGttExchange("NSE"); setGttLastPrice(0); }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {holdings.length > 0 && (
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">From holdings:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {holdings.slice(0, 8).map((h) => (
+                        <button
+                          key={h.symbol}
+                          onClick={() => {
+                            const lp = (h.instrumentToken != null && livePrices[h.instrumentToken]?.ltp) || h.ltp || 0;
+                            setSelectedGttInstrument(null);
+                            setGttExchange(h.exchange);
+                            setGttLastPrice(lp);
+                            setGttForm((f) => ({
+                              ...f,
+                              symbol: h.symbol,
+                              product: defaultProduct(h.exchange),
+                            }));
+                          }}
+                          className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                            gttForm.symbol === h.symbol
+                              ? "border-[#FF6600] text-[#FF6600] bg-[#FF6600]/10"
+                              : "border-[#2a2a2a] text-muted-foreground hover:border-[#3a3a3a] hover:text-foreground"
+                          }`}
+                        >
+                          {h.symbol}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Buy / Sell */}
               <div className="flex rounded overflow-hidden border border-[#2a2a2a]">
@@ -1004,7 +1108,7 @@ export default function Orders() {
                   onChange={(e) => setGttForm((f) => ({ ...f, product: e.target.value as Product }))}
                   className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#FF6600]"
                 >
-                  {productOptions(holdings.find((h) => h.symbol === gttForm.symbol)?.exchange ?? "NSE").map((o) => (
+                  {productOptions(gttExchange).map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
@@ -1108,7 +1212,11 @@ export default function Orders() {
                     <td className="px-3 py-2.5 text-muted-foreground text-xs">{o.product}</td>
                     <td className="px-3 py-2.5 text-right">{o.quantity}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs">
-                      {o.price > 0 ? `₹${o.price.toFixed(2)}` : "—"}
+                      {o.price > 0
+                        ? `₹${o.price.toFixed(2)}`
+                        : o.averagePrice && o.averagePrice > 0
+                          ? `₹${o.averagePrice.toFixed(2)}`
+                          : "—"}
                     </td>
                     <td className="px-3 py-2.5 text-muted-foreground text-xs">{o.orderType}</td>
                     <td className="px-3 py-2.5">
