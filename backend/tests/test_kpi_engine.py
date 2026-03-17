@@ -447,6 +447,51 @@ class TestEvaluateFormulaMacd:
 # Security: validate_formula blocks code injection
 # ─────────────────────────────────────────────────────────────────────────────
 
+class TestEvaluateMaSlope:
+    def test_ma_slope_returns_float(self):
+        df = _make_df(100)
+        result = evaluate_formula("MA_SLOPE(20)", df, None, "SCALAR")
+        assert isinstance(result, float)
+
+    def test_ma_slope_bounded(self):
+        """Result must be in (-90, 90) by arctan construction."""
+        df = _make_df(100)
+        result = evaluate_formula("MA_SLOPE(20)", df, None, "SCALAR")
+        assert result is not None
+        assert -90.0 < result < 90.0
+
+    def test_ma_slope_positive_for_rising(self):
+        """Rising price series → positive MA slope."""
+        df = _make_df(100)  # closes rise by +2 per bar
+        result = evaluate_formula("MA_SLOPE(20)", df, None, "SCALAR")
+        assert result is not None and result > 0.0
+
+    def test_ema_slope_returns_float(self):
+        df = _make_df(100)
+        result = evaluate_formula("EMA_SLOPE(20)", df, None, "SCALAR")
+        assert isinstance(result, float)
+
+    def test_ma_slope_flat_is_zero(self):
+        """Flat price → MA slope should be ~0 degrees."""
+        df = _make_flat_df(100)
+        result = evaluate_formula("MA_SLOPE(20)", df, None, "SCALAR")
+        assert result is not None
+        assert abs(result) < 1e-6
+
+    def test_ma_slope_insufficient_data_returns_none(self):
+        """Too few rows for the period → None."""
+        df = _make_df(5)  # only 5 rows, period=20
+        result = evaluate_formula("MA_SLOPE(20)", df, None, "SCALAR")
+        assert result is None
+
+    def test_ma_slope_validates_correctly(self):
+        validate_formula("MA_SLOPE(20)", "SCALAR")  # should not raise
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Security: validate_formula blocks code injection
+# ─────────────────────────────────────────────────────────────────────────────
+
 class TestFormulaSecurityValidation:
     def test_lambda_is_blocked(self):
         with pytest.raises(FormulaValidationError):

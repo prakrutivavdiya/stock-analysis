@@ -23,6 +23,8 @@ Supported indicator functions (pandas-ta backed)
   OBV()                 On-Balance Volume
   STOCH_K(k, d)         Stochastic %K
   STOCH_D(k, d)         Stochastic %D
+  MA_SLOPE(period)      SMA slope as angle in degrees (-90 to +90)
+  EMA_SLOPE(period)     EMA slope as angle in degrees (-90 to +90)
 
 Supported scalar names (no parentheses)
 ────────────────────────────────────────
@@ -57,6 +59,7 @@ INDICATOR_FUNCTIONS: dict[str, int] = {
     "BB_POSITION": 1,
     "ATR": 1, "OBV": 0,
     "STOCH_K": 2, "STOCH_D": 2,
+    "MA_SLOPE": 1, "EMA_SLOPE": 1,   # slope of SMA/EMA as angle in degrees (-90..90)
 }
 
 SCALAR_NAMES: frozenset[str] = frozenset({
@@ -399,6 +402,23 @@ def _compute_indicators(
                     values[sd] = _last(result.iloc[:, 1])
                 else:
                     values[sk] = values[sd] = None
+
+        elif name in ("MA_SLOPE", "EMA_SLOPE"):
+            period = args[0] if args else 20
+            ma_series = ta.sma(close, length=period) if name == "MA_SLOPE" else ta.ema(close, length=period)
+            if ma_series is not None:
+                valid = ma_series.dropna()
+                if len(valid) >= 2:
+                    ma_curr = float(valid.iloc[-1])
+                    ma_prev = float(valid.iloc[-2])
+                    # slope as % change per bar, then convert to angle via arctan
+                    # arctan naturally clamps result to (-90, 90) degrees
+                    pct_slope = (ma_curr - ma_prev) / ma_curr * 100 if ma_curr != 0 else 0.0
+                    values[key] = float(np.degrees(np.arctan(pct_slope)))
+                else:
+                    values[key] = None
+            else:
+                values[key] = None
 
     return values
 
