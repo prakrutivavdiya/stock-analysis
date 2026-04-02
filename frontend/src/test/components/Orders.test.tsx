@@ -79,6 +79,22 @@ vi.mock('../../app/api/client', () => ({
   },
 }))
 
+// Mock InstrumentSearch to expose deterministic test buttons for lot/tick validation tests
+vi.mock('../../app/components/InstrumentSearch', () => ({
+  default: ({ onSelect }: { onSelect: (inst: unknown) => void }) => (
+    <div>
+      <button data-testid="select-nifty-fut" onClick={() => onSelect({
+        instrument_token: 256265, tradingsymbol: 'NIFTYFUT', exchange: 'NFO',
+        name: 'NIFTY FUT', instrument_type: 'FUT', segment: 'NFO-FUT', lot_size: 25, tick_size: 0.05,
+      })}>NIFTYFUT</button>
+      <button data-testid="select-custom-tick" onClick={() => onSelect({
+        instrument_token: 99999, tradingsymbol: 'TESTFUT', exchange: 'NFO',
+        name: 'TEST FUT', instrument_type: 'FUT', segment: 'NFO-FUT', lot_size: 50, tick_size: 0.25,
+      })}>TESTFUT</button>
+    </div>
+  ),
+}))
+
 import Orders from '../../app/pages/Orders'
 
 function renderOrders() {
@@ -386,6 +402,113 @@ describe('Orders — GTT: modify GTT modal', () => {
     } else {
       // GTT submit button not found (form disabled due to missing required fields)
       expect(true).toBe(true)
+    }
+  })
+})
+
+// ── KITE-LOT-SIZE: F&O lot-size validation ───────────────────────────────────
+
+describe('Orders — KITE-LOT-SIZE: lot-size validation', () => {
+  it('shows lot-size error when F&O quantity is not a multiple of lot size', async () => {
+    renderOrders()
+    await userEvent.click(screen.getByTestId('select-nifty-fut')) // lot_size=25
+
+    const qtyInput = screen.queryByPlaceholderText('0')
+    if (qtyInput) {
+      await userEvent.clear(qtyInput)
+      await userEvent.type(qtyInput, '30') // 30 % 25 !== 0
+      await waitFor(() => {
+        expect(screen.queryByText(/multiple of lot size/i)).toBeInTheDocument()
+      })
+    }
+  })
+
+  it('error message contains nearest valid quantities', async () => {
+    renderOrders()
+    await userEvent.click(screen.getByTestId('select-nifty-fut'))
+
+    const qtyInput = screen.queryByPlaceholderText('0')
+    if (qtyInput) {
+      await userEvent.clear(qtyInput)
+      await userEvent.type(qtyInput, '30')
+      await waitFor(() => {
+        const msg = screen.queryByText(/multiple of lot size/i)
+        expect(msg).toBeInTheDocument()
+        expect(msg?.textContent).toMatch(/25/)
+        expect(msg?.textContent).toMatch(/50/)
+      })
+    }
+  })
+
+  it('clears lot-size error when a valid multiple is entered', async () => {
+    renderOrders()
+    await userEvent.click(screen.getByTestId('select-nifty-fut'))
+
+    const qtyInput = screen.queryByPlaceholderText('0')
+    if (qtyInput) {
+      await userEvent.clear(qtyInput)
+      await userEvent.type(qtyInput, '25') // 25 % 25 === 0
+      expect(screen.queryByText(/multiple of lot size/i)).not.toBeInTheDocument()
+    }
+  })
+
+  it('no lot-size error for equity holdings chip (no lot_size constraint)', async () => {
+    renderOrders()
+    const infyBtn = screen.getAllByRole('button').find((b) => b.textContent?.trim() === 'INFY')
+    if (infyBtn) {
+      await userEvent.click(infyBtn)
+      const qtyInput = screen.queryByPlaceholderText('0')
+      if (qtyInput) {
+        await userEvent.clear(qtyInput)
+        await userEvent.type(qtyInput, '7')
+        expect(screen.queryByText(/multiple of lot size/i)).not.toBeInTheDocument()
+      }
+    }
+  })
+})
+
+// ── KITE-TICK-SIZE: dynamic tick-size validation ──────────────────────────────
+
+describe('Orders — KITE-TICK-SIZE: tick-size validation', () => {
+  it('uses selectedInstrument.tick_size for price validation', async () => {
+    renderOrders()
+    await userEvent.click(screen.getByTestId('select-custom-tick')) // tick_size=0.25
+
+    const priceInput = screen.queryByPlaceholderText('0.00')
+    if (priceInput) {
+      await userEvent.clear(priceInput)
+      await userEvent.type(priceInput, '1500.10') // not a multiple of 0.25
+      await waitFor(() => {
+        expect(screen.queryByText(/multiple of ₹0\.25/i)).toBeInTheDocument()
+      })
+    }
+  })
+
+  it('no tick-size error when price is a valid multiple of tick_size', async () => {
+    renderOrders()
+    await userEvent.click(screen.getByTestId('select-custom-tick'))
+
+    const priceInput = screen.queryByPlaceholderText('0.00')
+    if (priceInput) {
+      await userEvent.clear(priceInput)
+      await userEvent.type(priceInput, '1500.25') // multiple of 0.25
+      expect(screen.queryByText(/multiple of ₹0\.25/i)).not.toBeInTheDocument()
+    }
+  })
+
+  it('falls back to ₹0.05 for NSE equity when no instrument tick_size is available', async () => {
+    renderOrders()
+    const infyBtn = screen.getAllByRole('button').find((b) => b.textContent?.trim() === 'INFY')
+    if (infyBtn) {
+      await userEvent.click(infyBtn) // no selectedInstrument, exchange=NSE → default 0.05
+      const priceInput = screen.queryByPlaceholderText('0.00')
+      if (priceInput) {
+        await userEvent.clear(priceInput)
+        await userEvent.type(priceInput, '1500.03') // not a multiple of 0.05
+        await waitFor(() => {
+          expect(screen.queryByText(/multiple of ₹0\.05/i)).toBeInTheDocument()
+        })
+      }
     }
   })
 })

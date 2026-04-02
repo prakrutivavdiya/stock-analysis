@@ -46,15 +46,19 @@ async def get_holdings(kite: KiteClient) -> HoldingsResponse:
 
     for h in raw:
         qty = h.get("quantity", 0)
+        t1_qty = h.get("t1_quantity", 0)
+        total_qty = qty + t1_qty
         avg = h.get("average_price", 0.0)
         ltp = h.get("last_price", 0.0)
         close = h.get("close_price", ltp)
-        current_val = qty * ltp
-        invested_val = qty * avg
-        pnl = current_val - invested_val
+        current_val = total_qty * ltp
+        invested_val = total_qty * avg
+        # Use Kite's pre-computed pnl (already accounts for qty + t1_qty precisely)
+        pnl = h.get("pnl", current_val - invested_val)
         pnl_pct = (pnl / invested_val * 100) if invested_val else 0.0
-        day_change = (ltp - close) * qty
-        day_change_pct = ((ltp - close) / close * 100) if close else 0.0
+        # Kite's day_change is per-share; multiply by total_qty for portfolio ₹ value
+        day_change = h.get("day_change", ltp - close) * total_qty
+        day_change_pct = h.get("day_change_percentage", ((ltp - close) / close * 100) if close else 0.0)
 
         holdings.append(Holding(
             tradingsymbol=h.get("tradingsymbol", ""),
@@ -167,7 +171,7 @@ async def get_summary(
     held_symbols: set[str] = set()
 
     for h in holdings_raw:
-        qty = h.get("quantity", 0)
+        qty = h.get("quantity", 0) + h.get("t1_quantity", 0)
         avg = h.get("average_price", 0.0)
         ltp = h.get("last_price", 0.0)
         inv = qty * avg
@@ -224,6 +228,8 @@ async def get_summary(
                 xirr_val = _xirr(cf_dates, cashflows)
                 if xirr_val is not None:
                     xirr_val = round(xirr_val * 100, 2)  # convert to %
+                else:
+                    xirr_val = None  # nonsensical result (e.g. e+207)
     except Exception:
         xirr_val = None  # XIRR is best-effort; never block the summary
 

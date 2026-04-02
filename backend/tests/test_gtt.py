@@ -295,3 +295,57 @@ async def test_delete_gtt_kite_error_returns_422(
     mock_kite.delete_gtt.side_effect = Exception("GTT not found")
     response = await client.delete("/api/v1/gtt/9999")
     assert response.status_code == 422
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audit invariant: failure paths must write audit logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_modify_gtt_kite_error_writes_failure_audit(
+    client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
+) -> None:
+    """422 on Kite rejection AND AuditLog with MODIFY_GTT/FAILURE must both be present."""
+    mock_kite.modify_gtt.side_effect = Exception("GTT trigger limit exceeded")
+
+    response = await client.put(
+        "/api/v1/gtt/1001",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "trigger_type": "single",
+            "transaction_type": "SELL",
+            "product": "CNC",
+            "last_price": 1500.0,
+            "trigger_value": 1380.0,
+            "limit_price": 1378.0,
+            "quantity": 10,
+        },
+    )
+
+    assert response.status_code == 422
+
+    result = await db_session.execute(
+        select(AuditLog).where(AuditLog.user_id == USER_ID)
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None, "Audit log must be written on GTT modify failure"
+    assert log.action_type == "MODIFY_GTT"
+    assert log.outcome == "FAILURE"
+
+
+async def test_delete_gtt_kite_error_writes_failure_audit(
+    client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
+) -> None:
+    """422 on Kite rejection AND AuditLog with DELETE_GTT/FAILURE must both be present."""
+    mock_kite.delete_gtt.side_effect = Exception("GTT not found")
+
+    response = await client.delete("/api/v1/gtt/9999")
+    assert response.status_code == 422
+
+    result = await db_session.execute(
+        select(AuditLog).where(AuditLog.user_id == USER_ID)
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None, "Audit log must be written on GTT delete failure"
+    assert log.action_type == "DELETE_GTT"
+    assert log.outcome == "FAILURE"

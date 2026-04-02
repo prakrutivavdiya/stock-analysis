@@ -193,3 +193,56 @@ async def test_summary_kite_error_returns_502(
     mock_kite.holdings.side_effect = Exception("API error")
     response = await client.get("/api/v1/portfolio/summary")
     assert response.status_code == 502
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Edge cases: zero avg_price, negative P&L, T+1 quantity
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_holdings_zero_avg_price_does_not_crash(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """avg_price=0 (bonus shares / corporate action) must not cause 500 / division-by-zero."""
+    raw = _raw_holding("WIPRO", qty=5, avg=0.0, ltp=300.0)
+    mock_kite.holdings.return_value = [raw]
+
+    response = await client.get("/api/v1/portfolio/holdings")
+
+    assert response.status_code == 200
+    h = response.json()["holdings"][0]
+    pnl_pct = h.get("pnl_pct")
+    # Must not be Infinity, NaN, or cause a 500
+    import math
+    assert pnl_pct is None or (isinstance(pnl_pct, (int, float)) and math.isfinite(pnl_pct))
+
+
+async def test_holdings_negative_pnl_computed_correctly(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """ltp < avg_price → negative pnl and pnl_pct; total_pnl < 0."""
+    mock_kite.holdings.return_value = [_raw_holding("ONGC", qty=10, avg=200.0, ltp=180.0)]
+
+    response = await client.get("/api/v1/portfolio/holdings")
+
+    assert response.status_code == 200
+    body = response.json()
+    h = body["holdings"][0]
+    assert h["pnl"] == pytest.approx(-200.0)  # (180-200)*10
+    assert h["pnl_pct"] < 0
+    assert body["summary"]["total_pnl"] == pytest.approx(-200.0)
+
+
+async def test_holdings_t1_quantity_in_response(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """t1_quantity (shares bought today, settling T+1) is present in the response."""
+    raw = _raw_holding("INFY", qty=10, avg=1500.0, ltp=1600.0)
+    raw["t1_quantity"] = 5
+    mock_kite.holdings.return_value = [raw]
+
+    response = await client.get("/api/v1/portfolio/holdings")
+
+    assert response.status_code == 200
+    h = response.json()["holdings"][0]
+    assert "t1_quantity" in h
+    assert h["t1_quantity"] == 5

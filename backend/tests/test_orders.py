@@ -531,3 +531,108 @@ async def test_cdsl_form_invalid_qty_returns_422(
         params={"isin": "INE009A01021", "qty": 0, "exchange": "NSE"},
     )
     assert response.status_code == 422
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audit log invariant: cancel failure must also write audit
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_cancel_order_kite_error_writes_failure_audit(
+    client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
+) -> None:
+    """422 on Kite rejection AND AuditLog with outcome=FAILURE must both be present."""
+    mock_kite.cancel_order.side_effect = Exception("Order not cancellable")
+
+    response = await client.delete("/api/v1/orders/ORDER123")
+    assert response.status_code == 422
+
+    result = await db_session.execute(
+        select(AuditLog).where(AuditLog.user_id == USER_ID)
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None, "Audit log must be written even on Kite cancel rejection"
+    assert log.action_type == "CANCEL_ORDER"
+    assert log.outcome == "FAILURE"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SL / SL-M orders with trigger_price
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_place_sl_order_forwards_trigger_price_to_kite(
+    client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
+) -> None:
+    """SL order places successfully with trigger_price forwarded to Kite."""
+    mock_kite.place_order.return_value = "SL_ORDER_001"
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "transaction_type": "SELL",
+            "quantity": 10,
+            "product": "CNC",
+            "order_type": "SL",
+            "price": 1490.0,
+            "trigger_price": 1495.0,
+            "validity": "DAY",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["order_id"] == "SL_ORDER_001"
+
+    call_kwargs = mock_kite.place_order.call_args.kwargs
+    assert call_kwargs.get("trigger_price") == 1495.0
+
+
+async def test_place_slm_order_success(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """SL-M order with only trigger_price (no limit price) succeeds."""
+    mock_kite.place_order.return_value = "SLM_ORDER_001"
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "transaction_type": "SELL",
+            "quantity": 5,
+            "product": "CNC",
+            "order_type": "SL-M",
+            "trigger_price": 1495.0,
+            "validity": "DAY",
+        },
+    )
+
+    assert response.status_code == 201
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Live SELL CNC success path
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_place_live_sell_cnc_order_success(
+    client: AsyncClient, mock_kite: MagicMock, db_session: AsyncSession
+) -> None:
+    """Live CNC SELL succeeds; audit log records transaction_type=SELL."""
+    mock_kite.place_order.return_value = "SELL_ORDER_001"
+
+    response = await client.post(
+        "/api/v1/orders",
+        json={
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "transaction_type": "SELL",
+            "quantity": 5,
+            "product": "CNC",
+            "order_type": "MARKET",
+            "validity": "DAY",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["order_id"] == "SELL_ORDER_001"
+    assert response.json()["paper_trade"] is False

@@ -61,7 +61,8 @@ async def test_put_preferences_saves(client: AsyncClient, mock_user, db_session)
         "visible_holdings_columns": ["quantity", "avgPrice"],
         "holdings_sort": {"column": "avgPrice", "direction": "asc"},
     }
-    with patch.object(db_session, "refresh", new_callable=AsyncMock):
+    with patch.object(db_session, "refresh", new_callable=AsyncMock), \
+         patch("backend.routers.preferences.flag_modified"):
         resp = await client.put("/api/v1/user/preferences", json=payload)
     assert resp.status_code == 200
     prefs = resp.json()["preferences"]
@@ -74,7 +75,8 @@ async def test_put_preferences_partial(client: AsyncClient, mock_user, db_sessio
     """PUT with only visible_holdings_columns — sort defaults used."""
     mock_user.ui_preferences = {}
     payload = {"visible_holdings_columns": ["ltp"]}
-    with patch.object(db_session, "refresh", new_callable=AsyncMock):
+    with patch.object(db_session, "refresh", new_callable=AsyncMock), \
+         patch("backend.routers.preferences.flag_modified"):
         resp = await client.put("/api/v1/user/preferences", json=payload)
     assert resp.status_code == 200
     prefs = resp.json()["preferences"]
@@ -86,7 +88,8 @@ async def test_put_preferences_partial(client: AsyncClient, mock_user, db_sessio
 async def test_put_preferences_empty(client: AsyncClient, mock_user, db_session):
     """PUT with {} resets to defaults."""
     mock_user.ui_preferences = {"visible_holdings_columns": ["ltp"]}
-    with patch.object(db_session, "refresh", new_callable=AsyncMock):
+    with patch.object(db_session, "refresh", new_callable=AsyncMock), \
+         patch("backend.routers.preferences.flag_modified"):
         resp = await client.put("/api/v1/user/preferences", json={})
     assert resp.status_code == 200
     prefs = resp.json()["preferences"]
@@ -99,3 +102,43 @@ async def test_get_preferences_route_accessible(client: AsyncClient, mock_user):
     mock_user.ui_preferences = None  # ensure clean state — no MagicMock child
     resp = await client.get("/api/v1/user/preferences")
     assert resp.status_code == 200
+
+
+# --- GET /user/columns ---
+
+@pytest.mark.asyncio
+async def test_get_columns_returns_list(client: AsyncClient, mock_user):
+    """Returns the full list of standard column definitions."""
+    resp = await client.get("/api/v1/user/columns")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "columns" in data
+    assert len(data["columns"]) == 11
+
+
+@pytest.mark.asyncio
+async def test_get_columns_schema(client: AsyncClient, mock_user):
+    """Each column definition has all required fields with correct types."""
+    resp = await client.get("/api/v1/user/columns")
+    for col in resp.json()["columns"]:
+        assert isinstance(col["id"], str)
+        assert isinstance(col["label"], str)
+        assert col["align"] in ("left", "right")
+        assert isinstance(col["default_visible"], bool)
+        assert col["filter_type"] in ("text", "range", "boolean", "categorical")
+
+
+@pytest.mark.asyncio
+async def test_get_columns_default_visible_count(client: AsyncClient, mock_user):
+    """Exactly 8 columns are default_visible=True."""
+    resp = await client.get("/api/v1/user/columns")
+    defaults = [c for c in resp.json()["columns"] if c["default_visible"]]
+    assert len(defaults) == 8
+
+
+@pytest.mark.asyncio
+async def test_get_columns_ids_are_unique(client: AsyncClient, mock_user):
+    """All column IDs are unique."""
+    resp = await client.get("/api/v1/user/columns")
+    ids = [c["id"] for c in resp.json()["columns"]]
+    assert len(ids) == len(set(ids))

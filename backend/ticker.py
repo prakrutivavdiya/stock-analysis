@@ -131,8 +131,13 @@ def _on_ticks(ws: Any, ticks: list[dict]) -> None:  # noqa: ARG001
 
 
 def _on_connect(ws: Any, response: Any) -> None:  # noqa: ARG001
-    global _ws_forbidden_count
+    global _ws_forbidden_count, _polling_task
     _ws_forbidden_count = 0  # reset on successful connect
+    # KiteTicker is working — cancel REST polling fallback if running
+    if _polling_task and not _polling_task.done():
+        _polling_task.cancel()
+        _polling_task = None
+        log.info("KiteTicker connected — REST polling fallback cancelled")
     if _subscribed_tokens:
         ws.subscribe(_subscribed_tokens)
         ws.set_mode(ws.MODE_QUOTE, _subscribed_tokens)
@@ -161,10 +166,20 @@ def _on_error(ws: Any, code: Any, reason: Any) -> None:  # noqa: ARG001
                 pass
     else:
         log.warning("KiteTicker error %s: %s", code, reason)
+        # Any non-403 error: start polling as fallback immediately
+        try:
+            _ensure_polling()
+        except Exception as exc:
+            log.warning("Failed to start polling fallback on error: %s", exc)
 
 
 def _on_close(ws: Any, code: Any, reason: Any) -> None:  # noqa: ARG001
     log.info("KiteTicker closed: %s %s", code, reason)
+    # Start polling fallback whenever the ticker closes (WebSocket unavailable)
+    try:
+        _ensure_polling()
+    except Exception as exc:
+        log.warning("Failed to start polling fallback on close: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,6 +220,19 @@ async def start_ticker(tokens: list[int], api_key: str, access_token: str) -> No
         name="kite-ticker",
     ).start()
     log.info("KiteTicker thread started, %d tokens queued for subscription", len(tokens))
+
+    # Schedule polling as an immediate fallback — _on_connect will cancel it
+    # if KiteTicker connects successfully within 10 s
+    async def _delayed_polling_fallback() -> None:
+        await asyncio.sleep(10)
+        if not _subscribed_tokens:
+            return
+        # Only start polling if no ticks have arrived yet (polling task not running)
+        if not _polling_task or _polling_task.done():
+            log.info("KiteTicker did not connect within 10 s — starting REST polling fallback")
+            _ensure_polling()
+
+    asyncio.create_task(_delayed_polling_fallback())
 
 
 async def stop_ticker() -> None:

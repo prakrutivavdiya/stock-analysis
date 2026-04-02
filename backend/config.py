@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # ── Zerodha Kite Connect ──────────────────────────────────────────────────
     KITE_API_KEY: str = ""
     KITE_API_SECRET: str = ""
-    KITE_REDIRECT_URL: str = "http://localhost:8000/api/v1/auth/callback"
+    KITE_REDIRECT_URL: str = "http://localhost:5174/api/v1/auth/callback"
 
     # ── JWT (RS256) ───────────────────────────────────────────────────────────
     JWT_PRIVATE_KEY: str = ""          # PEM-encoded RSA private key

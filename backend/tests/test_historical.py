@@ -9,8 +9,9 @@ Tests for /api/v1/historical endpoints.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -219,3 +220,74 @@ async def test_delete_cache_nonexistent_returns_zero(client: AsyncClient) -> Non
     response = await client.delete("/api/v1/historical/cache/999999")
     assert response.status_code == 200
     assert response.json()["deleted_rows"] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Yahoo Finance fallback — covers _fetch_from_yfinance body
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_historical_fallback_to_yfinance(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """When Kite raises a permission/403 error, _fetch_from_yfinance is invoked.
+
+    Covers: _fetch_from_yfinance body (set_ohlcv_source, yf.Ticker, DataFrame
+    parsing, OHLCVCache insert, and Candle list return).
+    """
+    mock_kite.historical_data.side_effect = Exception("403: permission denied")
+
+    mock_df = pd.DataFrame(
+        {
+            "Open":   [1490.0, 1495.0, 1500.0, 1505.0, 1510.0],
+            "High":   [1520.0, 1525.0, 1530.0, 1535.0, 1540.0],
+            "Low":    [1480.0, 1485.0, 1490.0, 1495.0, 1500.0],
+            "Close":  [1510.0, 1515.0, 1520.0, 1525.0, 1530.0],
+            "Volume": [1_000_000] * 5,
+        },
+        index=pd.date_range("2026-02-20", periods=5, freq="D", tz="UTC"),
+    )
+    mock_ticker = MagicMock()
+    mock_ticker.history.return_value = mock_df
+
+    with patch("yfinance.Ticker", return_value=mock_ticker):
+        response = await client.get(
+            "/api/v1/historical/408065",
+            params={
+                "interval": "day",
+                "from_date": "2026-02-20",
+                "to_date": "2026-02-24",
+                "tradingsymbol": "INFY",
+                "exchange": "NSE",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["instrument_token"] == 408065
+    assert len(body["candles"]) == 5
+    assert body["candles"][0]["close"] == pytest.approx(1510.0)
+
+
+async def test_historical_yfinance_empty_dataframe_returns_404(
+    client: AsyncClient, mock_kite: MagicMock
+) -> None:
+    """404 when yfinance returns an empty DataFrame for the symbol."""
+    mock_kite.historical_data.side_effect = Exception("permission denied")
+
+    mock_ticker = MagicMock()
+    mock_ticker.history.return_value = pd.DataFrame()
+
+    with patch("yfinance.Ticker", return_value=mock_ticker):
+        response = await client.get(
+            "/api/v1/historical/408065",
+            params={
+                "interval": "day",
+                "from_date": "2026-02-20",
+                "to_date": "2026-02-24",
+                "tradingsymbol": "INFY",
+                "exchange": "NSE",
+            },
+        )
+
+    assert response.status_code == 404
+    assert "No historical data" in response.json()["detail"]

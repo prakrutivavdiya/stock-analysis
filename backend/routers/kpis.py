@@ -129,7 +129,8 @@ async def _load_ohlcv_df(
     Yahoo Finance (same pattern as historical.py) if Kite denies permission.
     """
     # Need enough candles for slow indicators (e.g. SMA(200) needs 200+ trading days)
-    lookback_days = 300 if interval == "day" else 60
+    # 400 calendar days ≈ 270 trading days (safely above 200 after weekends + ~16 NSE holidays)
+    lookback_days = 400 if interval == "day" else 60
     as_of_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, tzinfo=timezone.utc)
     from_dt = as_of_dt - pd.Timedelta(days=lookback_days)
     to_dt = datetime(as_of_date.year, as_of_date.month, as_of_date.day, 23, 59, 59, tzinfo=timezone.utc)

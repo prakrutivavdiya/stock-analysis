@@ -25,203 +25,52 @@ import {
   mapMargins,
 } from "../api/portfolio";
 import { getKpiPortfolio } from "../api/kpis";
-import { getPreferences, savePreferences } from "../api/preferences";
+import { getColumns, getPreferences, savePreferences } from "../api/preferences";
 import { visibleHoldingsColumns, holdingsSort } from "../data/localPrefs";
 import { ApiError } from "../api/client";
+import type { ColumnDefinition, ColFilterType } from "../api/types";
 
-// ── Column definitions ─────────────────────────────────────────────────────
+// ── Format functions (frontend-only JSX renderers keyed by column id) ───────
+// Column metadata (id/label/align/filter_type) comes from GET /user/columns.
+// Only the React render logic lives here — not repeated in the backend schema.
 
-type ColId =
-  // Standard columns
-  | "exchange"
-  | "quantity"
-  | "t1Quantity"
-  | "avgPrice"
-  | "ltp"
-  | "dayChange"
-  | "dayChangePercent"
-  | "pnl"
-  | "pnlPercent"
-  | "currentValue"
-  | "investedValue"
-  // KPI columns
-  | "dailyRSI"
-  | "rsiOverbought"
-  | "bbPosition"
-  | "peRatio"
-  | "from52WeekHigh"
-  | "eps";
+type FormatFn = (h: Holding) => React.ReactNode;
 
-interface ColDef {
-  id: ColId;
-  label: string;
-  group: "standard" | "kpi";
-  align?: "right";
-  format?: (h: Holding) => React.ReactNode;
-}
+const FORMAT_FNS: Record<string, FormatFn> = {
+  t1Quantity: (h) => h.t1Quantity > 0
+    ? <span className="text-amber-400">{h.t1Quantity}</span>
+    : h.t1Quantity,
+  avgPrice:     (h) => `₹${h.avgPrice.toFixed(2)}`,
+  ltp:          (h) => `₹${h.ltp.toFixed(2)}`,
+  dayChange: (h) => (
+    <span className={h.dayChange >= 0 ? "text-green-400" : "text-red-400"}>
+      {h.dayChange >= 0 ? "+" : ""}₹{h.dayChange.toFixed(2)}
+    </span>
+  ),
+  dayChangePercent: (h) => (
+    <span className={h.dayChangePercent >= 0 ? "text-green-400" : "text-red-400"}>
+      {h.dayChangePercent >= 0 ? "+" : ""}{h.dayChangePercent.toFixed(2)}%
+    </span>
+  ),
+  pnl: (h) => (
+    <span className={h.pnl >= 0 ? "text-green-400" : "text-red-400"}>
+      {h.pnl >= 0 ? "+" : ""}₹{h.pnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+    </span>
+  ),
+  pnlPercent: (h) => (
+    <span className={h.pnlPercent >= 0 ? "text-green-400" : "text-red-400"}>
+      {h.pnlPercent >= 0 ? "+" : ""}{h.pnlPercent.toFixed(2)}%
+    </span>
+  ),
+  currentValue:  (h) => `₹${(h.ltp * (h.quantity + h.t1Quantity)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`,
+  investedValue: (h) => `₹${(h.avgPrice * (h.quantity + h.t1Quantity)).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`,
+};
 
-const ALL_COLUMNS: ColDef[] = [
-  // Standard
-  { id: "exchange", label: "Exchange", group: "standard" },
-  { id: "quantity", label: "Qty", group: "standard", align: "right", format: (h) => h.quantity },
-  { id: "t1Quantity", label: "T+1 Qty", group: "standard", align: "right", format: (h) => h.t1Quantity > 0 ? <span className="text-amber-400">{h.t1Quantity}</span> : h.t1Quantity },
-  { id: "avgPrice", label: "Avg Buy Price", group: "standard", align: "right", format: (h) => `₹${h.avgPrice.toFixed(2)}` },
-  { id: "ltp", label: "LTP", group: "standard", align: "right", format: (h) => `₹${h.ltp.toFixed(2)}` },
-  // PD-01 / US-010: Day Change (₹)
-  {
-    id: "dayChange",
-    label: "Day Chg (₹)",
-    group: "standard",
-    align: "right",
-    format: (h) => (
-      <span className={h.dayChange >= 0 ? "text-green-400" : "text-red-400"}>
-        {h.dayChange >= 0 ? "+" : ""}₹{h.dayChange.toFixed(2)}
-      </span>
-    ),
-  },
-  {
-    id: "dayChangePercent",
-    label: "Day Chg%",
-    group: "standard",
-    align: "right",
-    format: (h) => (
-      <span className={h.dayChangePercent >= 0 ? "text-green-400" : "text-red-400"}>
-        {h.dayChangePercent >= 0 ? "+" : ""}{h.dayChangePercent.toFixed(2)}%
-      </span>
-    ),
-  },
-  {
-    id: "pnl",
-    label: "Total P&L",
-    group: "standard",
-    align: "right",
-    format: (h) => (
-      <span className={h.pnl >= 0 ? "text-green-400" : "text-red-400"}>
-        {h.pnl >= 0 ? "+" : ""}₹{h.pnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-      </span>
-    ),
-  },
-  {
-    id: "pnlPercent",
-    label: "P&L%",
-    group: "standard",
-    align: "right",
-    format: (h) => (
-      <span className={h.pnlPercent >= 0 ? "text-green-400" : "text-red-400"}>
-        {h.pnlPercent >= 0 ? "+" : ""}{h.pnlPercent.toFixed(2)}%
-      </span>
-    ),
-  },
-  {
-    id: "currentValue",
-    label: "Curr Value",
-    group: "standard",
-    align: "right",
-    format: (h) => `₹${h.currentValue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`,
-  },
-  {
-    id: "investedValue",
-    label: "Invested",
-    group: "standard",
-    align: "right",
-    format: (h) => `₹${h.investedValue.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`,
-  },
-  // KPI columns
-  {
-    id: "dailyRSI",
-    label: "RSI (14)",
-    group: "kpi",
-    align: "right",
-    format: (h) => (h.kpis?.dailyRSI != null ? (h.kpis.dailyRSI as number).toFixed(1) : "—"),
-  },
-  {
-    id: "rsiOverbought",
-    label: "RSI >70",
-    group: "kpi",
-    align: "right",
-    format: (h) => {
-      const val = h.kpis?.rsiOverbought;
-      if (val == null) return "—";
-      return val ? (
-        <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-red-900/30 text-red-400">
-          true
-        </span>
-      ) : (
-        <span className="inline-flex px-1.5 py-0.5 rounded text-xs font-medium bg-[#2a2a2a] text-muted-foreground">
-          false
-        </span>
-      );
-    },
-  },
-  {
-    id: "bbPosition",
-    label: "BB Signal",
-    group: "kpi",
-    align: "right",
-    format: (h) => {
-      const v = h.kpis?.bbPosition;
-      if (!v) return "—";
-      // PRD KP-11: title-case values
-      const styles: Record<"Buy Signal" | "Sell Signal" | "Hold", string> = {
-        "Buy Signal": "bg-green-900/30 text-green-400",
-        "Sell Signal": "bg-red-900/30 text-red-400",
-        "Hold": "bg-[#2a2a2a] text-muted-foreground",
-      };
-      return (
-        <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${styles[v]}`}>
-          {v}
-        </span>
-      );
-    },
-  },
-  {
-    id: "peRatio",
-    label: "P/E",
-    group: "kpi",
-    align: "right",
-    // PRD KP-12: show "N/A" when fundamental data unavailable
-    format: (h) => h.kpis?.peRatio != null ? h.kpis.peRatio.toFixed(1) : "N/A",
-  },
-  {
-    id: "from52WeekHigh",
-    label: "% from 52W High",
-    group: "kpi",
-    align: "right",
-    format: (h) => {
-      const v = h.kpis?.from52WeekHigh;
-      if (v == null) return "N/A";
-      return (
-        <span className={v >= 0 ? "text-green-400" : "text-red-400"}>
-          {v >= 0 ? "+" : ""}{v.toFixed(1)}%
-        </span>
-      );
-    },
-  },
-  {
-    id: "eps",
-    label: "EPS",
-    group: "kpi",
-    align: "right",
-    // PRD KP-12: "N/A" for unavailable fundamental data
-    format: (h) => h.kpis?.eps != null ? h.kpis.eps.toFixed(2) : "N/A",
-  },
-];
-
-const DEFAULT_COLS: ColId[] = [
-  "quantity",
-  "avgPrice",
-  "ltp",
-  "dayChange",
-  "dayChangePercent",
-  "pnl",
-  "pnlPercent",
-  "currentValue",
-];
+// ── Static UI config ────────────────────────────────────────────────────────
 
 type SortKey = string;
 type SortDir = "asc" | "desc";
-type FilterKey = "all" | "gainers" | "losers" | "rsiOverbought" | "bbBuy" | "bbSell";
-type ColFilterType = "text" | "range" | "boolean" | "categorical";
+type FilterKey = "all" | "gainers" | "losers";
 
 const SORT_OPTIONS: { value: SortKey; label: string }[] = [
   { value: "symbol", label: "Symbol" },
@@ -236,44 +85,21 @@ const FILTER_OPTIONS: { value: FilterKey; label: string }[] = [
   { value: "all", label: "All holdings" },
   { value: "gainers", label: "Gainers today" },
   { value: "losers", label: "Losers today" },
-  { value: "rsiOverbought", label: "RSI Overbought" },
-  { value: "bbBuy", label: "BB Buy Signal" },
-  { value: "bbSell", label: "BB Sell Signal" },
 ];
-
-const COL_FILTER_TYPES: Record<string, ColFilterType> = {
-  symbol: "text",
-  exchange: "text",
-  quantity: "range",
-  t1Quantity: "range",
-  avgPrice: "range",
-  ltp: "range",
-  dayChange: "range",
-  dayChangePercent: "range",
-  pnl: "range",
-  pnlPercent: "range",
-  currentValue: "range",
-  investedValue: "range",
-  dailyRSI: "range",
-  rsiOverbought: "boolean",
-  bbPosition: "categorical",
-  peRatio: "range",
-  from52WeekHigh: "range",
-  eps: "range",
-};
-
-const BB_POSITION_VALUES = ["Buy Signal", "Sell Signal", "Hold"];
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [visibleCols, setVisibleCols] = useState<ColId[]>(() => {
+  const [allColumns, setAllColumns] = useState<ColumnDefinition[]>([]);
+  const [visibleCols, setVisibleCols] = useState<string[]>(() => {
+    // Fast sync init from localStorage; overwritten by backend on mount
     const saved = visibleHoldingsColumns.get();
-    return saved.length > 0 ? (saved as ColId[]) : DEFAULT_COLS;
+    return saved.length > 0 ? saved : [];
   });
   const [userKpis, setUserKpis] = useState<{ name: string; returnType: string }[]>([]);
   const [visibleUserKpis, setVisibleUserKpis] = useState<string[]>([]);
   const [showColPicker, setShowColPicker] = useState(false);
-  const [dragColId, setDragColId] = useState<ColId | null>(null);
+  const [dragColId, setDragColId] = useState<string | null>(null);
+  const [dragKpiId, setDragKpiId] = useState<string | null>(null);
   const [showFilter, setShowFilter] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -283,21 +109,28 @@ export default function Dashboard() {
   const [sortKey, setSortKey] = useState<SortKey>((savedSort.column as SortKey) || "symbol");
   const [sortDir, setSortDir] = useState<SortDir>(savedSort.direction);
 
-  // PD-09: Load preferences from backend on mount; fall back to localStorage
+  // Load column definitions + user preferences together so defaults from DB
+  // are used when the user has no saved prefs (source of truth is always DB).
   useEffect(() => {
-    getPreferences()
-      .then(({ preferences: p }) => {
-        if (p.visible_holdings_columns.length > 0) {
-          setVisibleCols(p.visible_holdings_columns as ColId[]);
-          visibleHoldingsColumns.set(p.visible_holdings_columns);
-        }
+    Promise.all([getColumns(), getPreferences()])
+      .then(([{ columns }, { preferences: p }]) => {
+        setAllColumns(columns);
+        const defaultCols = columns.filter((c) => c.default_visible).map((c) => c.id);
+        const cols = p.visible_holdings_columns.length > 0
+          ? p.visible_holdings_columns
+          : defaultCols;
+        setVisibleCols(cols);
+        visibleHoldingsColumns.set(cols);
         if (p.holdings_sort.column) {
           setSortKey(p.holdings_sort.column as SortKey);
           setSortDir(p.holdings_sort.direction);
           holdingsSort.set(p.holdings_sort);
         }
+        if (p.visible_user_kpi_columns && p.visible_user_kpi_columns.length > 0) {
+          setVisibleUserKpis(p.visible_user_kpi_columns);
+        }
       })
-      .catch(() => { /* offline or unauthenticated — use localStorage values already set */ });
+      .catch(() => { /* offline — keep localStorage values */ });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // PD-09: Persist column visibility to localStorage + backend after every change (skip first mount)
@@ -320,6 +153,16 @@ export default function Dashboard() {
       holdings_sort: { column: sortKey, direction: sortDir },
     }).catch(() => {}); // best-effort
   }, [sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const kpiColsInitialized = useRef(false);
+  useEffect(() => {
+    if (!kpiColsInitialized.current) { kpiColsInitialized.current = true; return; }
+    savePreferences({
+      visible_holdings_columns: visibleCols,
+      visible_user_kpi_columns: visibleUserKpis,
+      holdings_sort: { column: sortKey, direction: sortDir },
+    }).catch(() => {});
+  }, [visibleUserKpis]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [filterPopover, setFilterPopover] = useState<string | null>(null);
@@ -342,6 +185,7 @@ export default function Dashboard() {
   const storePositions = useAppStore((s) => s.positions);
   const storeMargins = useAppStore((s) => s.margins);
   const livePrices = useAppStore((s) => s.livePrices);
+  const setLivePrices = useAppStore((s) => s.setLivePrices);
   const setStoreHoldings = useAppStore((s) => s.setHoldings);
   const setStorePositions = useAppStore((s) => s.setPositions);
   const setStoreMargins = useAppStore((s) => s.setMargins);
@@ -349,6 +193,45 @@ export default function Dashboard() {
   const holdings: Holding[] = storeHoldings.data ?? [];
   const positions = storePositions.data ?? [];
   const margin = storeMargins.data;
+
+  // ── REST polling fallback for live prices ──────────────────────────────────
+  // When the WebSocket delivers no ticks for >4 s (e.g. KiteTicker unavailable),
+  // poll GET /portfolio/holdings every 5 s and inject last_price as live ticks.
+  const lastTickTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (Object.keys(livePrices).length > 0) lastTickTimeRef.current = Date.now();
+  }, [livePrices]);
+
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (Date.now() - lastTickTimeRef.current < 4_000) return; // WS is live
+      const currentHoldings = useAppStore.getState().holdings.data ?? [];
+      if (currentHoldings.length === 0) return;
+      try {
+        const res = await getHoldings();
+        const ticks = res.holdings
+          .filter((h) => h.instrument_token)
+          .map((h) => ({
+            instrument_token: h.instrument_token,
+            ltp: h.last_price,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: h.close_price,
+            change: h.day_change_pct,
+            volume: 0,
+            last_trade_time: null,
+          }));
+        if (ticks.length > 0) setLivePrices(ticks);
+      } catch {
+        // best-effort; ignore errors
+      }
+    }, 5_000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setLivePrices]);
+  // ──────────────────────────────────────────────────────────────────────────
 
   const fetchData = async () => {
     setLoading(true);
@@ -446,9 +329,6 @@ export default function Dashboard() {
     // Global quick-filter
     if (activeFilter === "gainers") rows = rows.filter((h) => h.dayChangePercent > 0);
     else if (activeFilter === "losers") rows = rows.filter((h) => h.dayChangePercent < 0);
-    else if (activeFilter === "rsiOverbought") rows = rows.filter((h) => h.kpis?.rsiOverbought);
-    else if (activeFilter === "bbBuy") rows = rows.filter((h) => h.kpis?.bbPosition === "Buy Signal");
-    else if (activeFilter === "bbSell") rows = rows.filter((h) => h.kpis?.bbPosition === "Sell Signal");
 
     // Per-column text filters
     if (colFilters["symbol"]) {
@@ -470,12 +350,8 @@ export default function Dashboard() {
       dayChangePercent: (h) => h.dayChangePercent,
       pnl: (h) => h.pnl,
       pnlPercent: (h) => h.pnlPercent,
-      currentValue: (h) => h.currentValue,
-      investedValue: (h) => h.investedValue,
-      dailyRSI: (h) => h.kpis?.dailyRSI ?? null,
-      peRatio: (h) => h.kpis?.peRatio ?? null,
-      from52WeekHigh: (h) => h.kpis?.from52WeekHigh ?? null,
-      eps: (h) => h.kpis?.eps ?? null,
+      currentValue: (h) => h.ltp * (h.quantity + h.t1Quantity),
+      investedValue: (h) => h.avgPrice * (h.quantity + h.t1Quantity),
     };
     for (const [id, getter] of Object.entries(NUMERIC_GETTERS)) {
       const minStr = colFilters[`${id}_min`];
@@ -484,15 +360,6 @@ export default function Dashboard() {
       const minN = minStr ? parseFloat(minStr) : -Infinity;
       const maxN = maxStr ? parseFloat(maxStr) : Infinity;
       rows = rows.filter((h) => { const v = getter(h); return v != null && v >= minN && v <= maxN; });
-    }
-
-    // Per-column boolean / categorical filters
-    if (colFilters["rsiOverbought"]) {
-      const target = colFilters["rsiOverbought"] === "true";
-      rows = rows.filter((h) => h.kpis?.rsiOverbought === target);
-    }
-    if (colFilters["bbPosition"]) {
-      rows = rows.filter((h) => h.kpis?.bbPosition === colFilters["bbPosition"]);
     }
 
     // User KPI column filters
@@ -521,17 +388,11 @@ export default function Dashboard() {
       else if (sortKey === "pnlPercent") { av = a.pnlPercent; bv = b.pnlPercent; }
       else if (sortKey === "pnl") { av = a.pnl; bv = b.pnl; }
       else if (sortKey === "ltp") { av = a.ltp; bv = b.ltp; }
-      else if (sortKey === "currentValue") { av = a.currentValue; bv = b.currentValue; }
+      else if (sortKey === "currentValue") { av = a.ltp * (a.quantity + a.t1Quantity); bv = b.ltp * (b.quantity + b.t1Quantity); }
       else if (sortKey === "avgPrice") { av = a.avgPrice; bv = b.avgPrice; }
       else if (sortKey === "quantity") { av = a.quantity; bv = b.quantity; }
       else if (sortKey === "t1Quantity") { av = a.t1Quantity; bv = b.t1Quantity; }
       else if (sortKey === "investedValue") { av = a.investedValue; bv = b.investedValue; }
-      else if (sortKey === "dailyRSI") { av = a.kpis?.dailyRSI ?? -Infinity; bv = b.kpis?.dailyRSI ?? -Infinity; }
-      else if (sortKey === "rsiOverbought") { av = a.kpis?.rsiOverbought ? 1 : 0; bv = b.kpis?.rsiOverbought ? 1 : 0; }
-      else if (sortKey === "bbPosition") { av = a.kpis?.bbPosition ?? ""; bv = b.kpis?.bbPosition ?? ""; }
-      else if (sortKey === "peRatio") { av = a.kpis?.peRatio ?? -Infinity; bv = b.kpis?.peRatio ?? -Infinity; }
-      else if (sortKey === "from52WeekHigh") { av = a.kpis?.from52WeekHigh ?? -Infinity; bv = b.kpis?.from52WeekHigh ?? -Infinity; }
-      else if (sortKey === "eps") { av = a.kpis?.eps ?? -Infinity; bv = b.kpis?.eps ?? -Infinity; }
       else if (sortKey.startsWith("kpi_")) {
         const kpiName = sortKey.slice(4);
         const valA = (a.kpis as Record<string, unknown> | undefined)?.[kpiName];
@@ -546,20 +407,24 @@ export default function Dashboard() {
     return rows;
   }, [holdings, sortKey, sortDir, activeFilter, colFilters, userKpis]);
 
-  // PD-04: Portfolio summary totals
+  // PD-04: Portfolio summary totals — use live prices when available (mirrors Kite behaviour)
   const totals = useMemo(() => {
-    const invested = holdings.reduce((s, h) => s + h.investedValue, 0);
-    const current = holdings.reduce((s, h) => s + h.currentValue, 0);
+    const invested = holdings.reduce((s, h) => s + h.avgPrice * (h.quantity + h.t1Quantity), 0);
+    const current = holdings.reduce((s, h) => {
+      const tick = h.instrumentToken != null ? livePrices[h.instrumentToken] : undefined;
+      const ltp = tick?.ltp ?? h.ltp;
+      return s + ltp * (h.quantity + h.t1Quantity);
+    }, 0);
     const pnl = current - invested;
     const pnlPct = invested > 0 ? (pnl / invested) * 100 : 0;
     return { invested, current, pnl, pnlPct };
-  }, [holdings]);
+  }, [holdings, livePrices]);
 
   // PD-02: Intraday auto-square warning
   const intradayPositions = positions.filter((p) => p.product === "MIS");
   const showAutoSquareWarning = intradayPositions.length > 0;
 
-  const toggleCol = useCallback((id: ColId) => {
+  const toggleCol = useCallback((id: string) => {
     setVisibleCols((prev) =>
       prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]
     );
@@ -571,7 +436,8 @@ export default function Dashboard() {
     );
   }, []);
 
-  const colDef = (id: ColId) => ALL_COLUMNS.find((c) => c.id === id)!;
+  const colDef = (id: string): ColumnDefinition =>
+    allColumns.find((c) => c.id === id) ?? { id, label: id, align: "left", default_visible: false, filter_type: "text" };
 
   const SortIcon = ({ col }: { col: string }) => {
     if (sortKey !== col) return <ChevronsUpDown className="w-3 h-3 opacity-40" />;
@@ -584,7 +450,7 @@ export default function Dashboard() {
     <div className="flex flex-col h-full">
       {/* PD-02: MIS auto-square warning */}
       {showAutoSquareWarning && (
-        <div className="bg-amber-900/20 border-b border-amber-500/30 px-4 py-2 flex items-center gap-2 text-sm text-amber-400">
+        <div className="bg-amber-900/20 border-b border-amber-500/30 px-4 py-2 flex items-center gap-2 text-xs text-amber-400">
           <AlertTriangle className="w-4 h-4 shrink-0" />
           <span>
             You have {intradayPositions.length} open intraday (MIS) position
@@ -610,7 +476,7 @@ export default function Dashboard() {
         {/* PD-04: XIRR */}
         <SummaryCard
           label="XIRR"
-          value={xirr != null ? `${xirr.toFixed(1)}%` : "N/A"}
+          value={xirr != null ? `${xirr.toFixed(2)}%` : "N/A"}
           valueClass={xirr != null && xirr >= 0 ? "text-green-400" : undefined}
           hint="Annualised return on invested capital"
         />
@@ -672,7 +538,7 @@ export default function Dashboard() {
             )}
           </button>
           {showFilter && (
-            <div className="absolute top-full mt-1 left-0 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-lg z-10 py-1 min-w-[160px]">
+            <div className="absolute top-full mt-1 left-0 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-lg z-20 py-1 min-w-[160px]">
               {FILTER_OPTIONS.map((f) => (
                 <button
                   key={f.value}
@@ -714,14 +580,14 @@ export default function Dashboard() {
               Columns
             </button>
             {showColPicker && (
-              <div className="absolute top-full mt-1 right-0 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-lg z-10 p-3 w-56">
+              <div className="absolute top-full mt-1 right-0 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-lg z-20 p-3 w-56">
                 {/* Visible columns — drag to reorder */}
                 <p className="text-xs font-medium text-muted-foreground mb-1 uppercase tracking-wider">
                   Visible (drag to reorder)
                 </p>
                 {visibleCols.map((id) => {
-                  const c = ALL_COLUMNS.find((col) => col.id === id);
-                  if (!c || c.group !== "standard") return null;
+                  const c = allColumns.find((col) => col.id === id);
+                  if (!c) return null;
                   return (
                     <div
                       key={id}
@@ -757,12 +623,12 @@ export default function Dashboard() {
                   );
                 })}
                 {/* Hidden columns — click to add */}
-                {ALL_COLUMNS.filter((c) => c.group === "standard" && !visibleCols.includes(c.id)).length > 0 && (
+                {allColumns.filter((c) => !visibleCols.includes(c.id)).length > 0 && (
                   <>
                     <p className="text-xs font-medium text-muted-foreground mb-1 mt-3 uppercase tracking-wider">
                       Hidden (click to add)
                     </p>
-                    {ALL_COLUMNS.filter((c) => c.group === "standard" && !visibleCols.includes(c.id)).map((c) => (
+                    {allColumns.filter((c) => !visibleCols.includes(c.id)).map((c) => (
                       <label
                         key={c.id}
                         className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
@@ -781,24 +647,68 @@ export default function Dashboard() {
                 )}
                 {userKpis.length > 0 && (
                   <>
-                    <p className="text-xs font-medium text-muted-foreground mb-2 mt-3 uppercase tracking-wider">
-                      My KPIs
-                    </p>
-                    {userKpis.map((k) => (
-                      <label
-                        key={k.name}
-                        className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
-                      >
-                        <span className="w-3 shrink-0" />
-                        <input
-                          type="checkbox"
-                          checked={visibleUserKpis.includes(k.name)}
-                          onChange={() => toggleUserKpi(k.name)}
-                          className="accent-[#FF6600]"
-                        />
-                        {k.name}
-                      </label>
-                    ))}
+                    {visibleUserKpis.length > 0 && (
+                      <>
+                        <p className="text-xs font-medium text-muted-foreground mb-1 mt-3 uppercase tracking-wider">
+                          My KPIs (drag to reorder)
+                        </p>
+                        {visibleUserKpis.map((name) => (
+                          <div
+                            key={name}
+                            draggable
+                            onDragStart={() => setDragKpiId(name)}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              if (!dragKpiId || dragKpiId === name) return;
+                              setVisibleUserKpis((prev) => {
+                                const next = [...prev];
+                                const from = next.indexOf(dragKpiId);
+                                const to = next.indexOf(name);
+                                if (from === -1 || to === -1) return prev;
+                                next.splice(from, 1);
+                                next.splice(to, 0, dragKpiId);
+                                return next;
+                              });
+                            }}
+                            onDragEnd={() => setDragKpiId(null)}
+                            className={`flex items-center gap-2 px-1 py-1 text-xs rounded select-none ${
+                              dragKpiId === name ? "opacity-40" : "hover:bg-[#2a2a2a]"
+                            }`}
+                          >
+                            <GripVertical className="w-3 h-3 text-muted-foreground/40 cursor-grab shrink-0" />
+                            <input
+                              type="checkbox"
+                              checked
+                              onChange={() => toggleUserKpi(name)}
+                              className="accent-[#FF6600]"
+                            />
+                            <span className="cursor-grab">{name}</span>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {userKpis.filter((k) => !visibleUserKpis.includes(k.name)).length > 0 && (
+                      <>
+                        <p className="text-xs font-medium text-muted-foreground mb-1 mt-3 uppercase tracking-wider">
+                          Hidden KPIs (click to add)
+                        </p>
+                        {userKpis.filter((k) => !visibleUserKpis.includes(k.name)).map((k) => (
+                          <label
+                            key={k.name}
+                            className="flex items-center gap-2 px-1 py-1 text-xs cursor-pointer hover:bg-[#2a2a2a] rounded"
+                          >
+                            <span className="w-3 shrink-0" />
+                            <input
+                              type="checkbox"
+                              checked={false}
+                              onChange={() => toggleUserKpi(k.name)}
+                              className="accent-[#FF6600]"
+                            />
+                            {k.name}
+                          </label>
+                        ))}
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -808,15 +718,15 @@ export default function Dashboard() {
       </div>
 
       {/* Scrollable content area */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto min-h-0">
         {/* Holdings table */}
-        <table className="w-full text-sm">
+        <table className="w-full text-xs">
           <thead className="sticky top-0 bg-[#121212] border-b border-[#2a2a2a] z-10">
             <tr>
               {/* Symbol column */}
               <th className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs">
                 <div className="flex items-center gap-1">
-                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => handleHeaderSort("symbol")}>
+                  <button className="flex items-center gap-1 hover:text-foreground font-medium text-xs" onClick={() => handleHeaderSort("symbol")}>
                     Symbol <SortIcon col="symbol" />
                   </button>
                   <ColFilterBtn colId="symbol" filterType="text" filterPopover={filterPopover} setFilterPopover={setFilterPopover} colFilters={colFilters} setColFilters={setColFilters} />
@@ -824,17 +734,17 @@ export default function Dashboard() {
               </th>
               {visibleCols.map((id) => {
                 const col = colDef(id);
-                const filterType = COL_FILTER_TYPES[id] ?? "text";
+                const filterType = col.filter_type;
                 const isRight = col.align === "right";
                 return (
                   <th key={id} className={`px-4 py-2.5 text-xs text-muted-foreground font-medium ${isRight ? "text-right" : "text-left"}`}>
                     <div className={`flex items-center gap-1 ${isRight ? "flex-row-reverse" : ""}`}>
-                      <button className="flex items-center gap-1 hover:text-foreground" onClick={() => handleHeaderSort(id)}>
+                      <button className="flex items-center gap-1 hover:text-foreground font-medium text-xs" onClick={() => handleHeaderSort(id)}>
                         {isRight && <SortIcon col={id} />}
                         {col.label}
                         {!isRight && <SortIcon col={id} />}
                       </button>
-                      <ColFilterBtn colId={id} filterType={filterType} filterPopover={filterPopover} setFilterPopover={setFilterPopover} colFilters={colFilters} setColFilters={setColFilters} options={id === "bbPosition" ? BB_POSITION_VALUES : undefined} align={isRight ? "right" : undefined} />
+                      <ColFilterBtn colId={id} filterType={filterType} filterPopover={filterPopover} setFilterPopover={setFilterPopover} colFilters={colFilters} setColFilters={setColFilters} align={isRight ? "right" : undefined} />
                     </div>
                   </th>
                 );
@@ -846,7 +756,7 @@ export default function Dashboard() {
                 return (
                   <th key={`kpi-${name}`} className="px-4 py-2.5 text-xs text-muted-foreground font-medium text-right">
                     <div className="flex items-center gap-1 flex-row-reverse">
-                      <button className="flex items-center gap-1 hover:text-foreground" onClick={() => handleHeaderSort(kpiId)}>
+                      <button className="flex items-center gap-1 hover:text-foreground font-medium text-xs" onClick={() => handleHeaderSort(kpiId)}>
                         <SortIcon col={kpiId} />
                         {name}
                       </button>
@@ -864,52 +774,52 @@ export default function Dashboard() {
                 className="border-b border-[#1a1a1a] hover:bg-[#141414] cursor-pointer transition-colors"
                 onClick={() => navigate(`/charts/${holding.symbol}`)}
               >
-                <td className="px-4 py-2.5">
-                  <div className="font-medium">{holding.symbol}</div>
+                <td className="px-4 py-2">
+                  <div className="font-medium text-xs">{holding.symbol}</div>
                   <div className="text-xs text-muted-foreground">{holding.exchange}</div>
                 </td>
                 {visibleCols.map((id) => {
                   const col = colDef(id);
                   if (id === "exchange") return (
-                    <td key={id} className="px-4 py-2.5 text-muted-foreground text-xs">
+                    <td key={id} className="px-4 py-2 text-muted-foreground font-medium text-xs">
                       {holding.exchange}
                     </td>
                   );
                   // Live price overrides for ltp / dayChange / dayChangePercent / pnl / currentValue
                   const tick = holding.instrumentToken != null ? livePrices[holding.instrumentToken] : undefined;
                   if (id === "ltp" && tick) return (
-                    <td key={id} className="px-4 py-2.5 text-right font-mono">
+                    <td key={id} className="px-4 py-2 text-right font-medium text-xs">
                       <span className={tick.change >= 0 ? "text-green-400" : "text-red-400"}>
                         ₹{tick.ltp.toFixed(2)}
                       </span>
                     </td>
                   );
                   if (id === "dayChangePercent" && tick) return (
-                    <td key={id} className="px-4 py-2.5 text-right">
+                    <td key={id} className="px-4 py-2 text-right font-medium text-xs">
                       <span className={tick.change >= 0 ? "text-green-400" : "text-red-400"}>
                         {tick.change >= 0 ? "+" : ""}{tick.change.toFixed(2)}%
                       </span>
                     </td>
                   );
                   if (id === "dayChange" && tick) return (
-                    <td key={id} className="px-4 py-2.5 text-right">
+                    <td key={id} className="px-4 py-2 text-right">
                       <span className={tick.change >= 0 ? "text-green-400" : "text-red-400"}>
-                        {tick.change >= 0 ? "+" : ""}₹{((tick.ltp - tick.close) * holding.quantity).toFixed(2)}
+                        {tick.change >= 0 ? "+" : ""}₹{((tick.ltp - tick.close) * (holding.quantity + holding.t1Quantity)).toFixed(2)}
                       </span>
                     </td>
                   );
                   if (id === "currentValue" && tick) {
-                    const cv = tick.ltp * holding.quantity;
+                    const cv = tick.ltp * (holding.quantity + holding.t1Quantity);
                     return (
-                      <td key={id} className="px-4 py-2.5 text-right font-mono">
+                      <td key={id} className="px-4 py-2 text-right font-medium text-xs">
                         ₹{cv.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                       </td>
                     );
                   }
                   if (id === "pnl" && tick) {
-                    const livePnl = (tick.ltp - holding.avgPrice) * holding.quantity;
+                    const livePnl = (tick.ltp - holding.avgPrice) * (holding.quantity + holding.t1Quantity);
                     return (
-                      <td key={id} className="px-4 py-2.5 text-right">
+                      <td key={id} className="px-4 py-2 text-right font-medium text-xs">
                         <span className={livePnl >= 0 ? "text-green-400" : "text-red-400"}>
                           {livePnl >= 0 ? "+" : ""}₹{livePnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
                         </span>
@@ -919,20 +829,21 @@ export default function Dashboard() {
                   if (id === "pnlPercent" && tick && holding.avgPrice > 0) {
                     const livePnlPct = ((tick.ltp - holding.avgPrice) / holding.avgPrice) * 100;
                     return (
-                      <td key={id} className="px-4 py-2.5 text-right">
+                      <td key={id} className="px-4 py-2 text-right font-medium text-xs">
                         <span className={livePnlPct >= 0 ? "text-green-400" : "text-red-400"}>
                           {livePnlPct >= 0 ? "+" : ""}{livePnlPct.toFixed(2)}%
                         </span>
                       </td>
                     );
                   }
-                  const rendered = col.format
-                    ? col.format(holding)
+                  const formatFn = FORMAT_FNS[id];
+                  const rendered = formatFn
+                    ? formatFn(holding)
                     : (holding[id as keyof Holding] as React.ReactNode);
                   return (
                     <td
                       key={id}
-                      className={`px-4 py-2.5 ${col.align === "right" ? "text-right" : ""}`}
+                      className={`px-4 py-2 font-medium text-xs ${col.align === "right" ? "text-right" : ""}`}
                     >
                       {rendered}
                     </td>
@@ -941,11 +852,15 @@ export default function Dashboard() {
                 {visibleUserKpis.map((name) => {
                   const val = (holding.kpis as Record<string, unknown> | undefined)?.[name];
                   const displayVal = val == null ? "—"
-                    : typeof val === "boolean" ? (val ? "Yes" : "No")
+                    : typeof val === "boolean" ? (
+                        <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${val ? "bg-red-900/30 text-red-400" : "bg-[#2a2a2a] text-muted-foreground"}`}>
+                          {val ? "true" : "false"}
+                        </span>
+                      )
                     : typeof val === "number" ? val.toFixed(2)
                     : String(val);
                   return (
-                    <td key={`kpi-${name}`} className="px-4 py-2.5 text-right text-xs">
+                    <td key={`kpi-${name}`} className="px-4 py-2 text-right text-xs">
                       {displayVal}
                     </td>
                   );
@@ -965,40 +880,45 @@ export default function Dashboard() {
           </tbody>
         </table>
 
-        {/* PD-02: Intraday Positions section */}
-        <div className="border-t-2 border-[#2a2a2a]">
-          <div className="sticky top-0 bg-[#0f0f0f] px-4 py-2 flex items-center justify-between border-b border-[#2a2a2a]">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Intraday Positions
-              </span>
-              {positions.length > 0 && (
-                <span className="text-xs bg-[#2a2a2a] text-muted-foreground px-1.5 py-0.5 rounded">
-                  {positions.length}
-                </span>
-              )}
-            </div>
-            <button
-              onClick={() => setShowPositions((v) => !v)}
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {showPositions ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-          </div>
+      </div>
 
-          {showPositions && (
-            positions.length > 0 ? (
-              <table className="w-full text-sm">
-                <thead className="bg-[#121212] border-b border-[#2a2a2a]">
+      {/* PD-02: Intraday Positions — sticky bottom panel */}
+      <div className="flex-shrink-0 border-t-2 border-[#2a2a2a] bg-[#0f0f0f]">
+        {/* Panel header */}
+        <div className="px-4 py-1.5 flex items-center justify-between border-b border-[#2a2a2a]">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Intraday Positions
+            </span>
+            {positions.length > 0 && (
+              <span className="text-xs bg-[#2a2a2a] text-muted-foreground px-1.5 py-0.5 rounded">
+                {positions.length}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => setShowPositions((v) => !v)}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {showPositions ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+          </button>
+        </div>
+
+        {/* Scrollable content — max 3 rows visible (~180px), overflow scrolls */}
+        {showPositions && (
+          <div className="overflow-auto max-h-[180px]">
+            {positions.length > 0 ? (
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[#121212] border-b border-[#2a2a2a] z-10">
                   <tr>
-                    <th className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs">Symbol</th>
-                    <th className="px-4 py-2.5 text-left text-muted-foreground font-medium text-xs">Product</th>
-                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Qty</th>
-                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Avg Buy Price</th>
-                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">LTP</th>
-                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">Unrealised P&L</th>
-                    <th className="px-4 py-2.5 text-right text-muted-foreground font-medium text-xs">M2M P&L</th>
-                    <th className="px-4 py-2.5 text-center text-muted-foreground font-medium text-xs">Action</th>
+                    <th className="px-4 py-1 text-left text-muted-foreground font-medium text-xs">Symbol</th>
+                    <th className="px-4 py-1 text-left text-muted-foreground font-medium text-xs">Product</th>
+                    <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">Qty</th>
+                    <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">Avg Buy Price</th>
+                    <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">LTP</th>
+                    <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">Unrealised P&L</th>
+                    <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">M2M P&L</th>
+                    <th className="px-4 py-1 text-center text-muted-foreground font-medium text-xs">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1011,45 +931,44 @@ export default function Dashboard() {
                     const posM2mPnl = posTick != null && pos.quantity !== 0
                       ? (posTick.ltp - posTick.close) * pos.quantity
                       : pos.m2mPnl;
-                    // KITE-SQUARE-OFF: reverse direction to square off
                     const sqOffTx = pos.quantity > 0 ? "SELL" : "BUY";
                     const sqOffQty = Math.abs(pos.quantity);
                     return (
-                    <tr key={`${pos.symbol}-${pos.product}`} className="border-b border-[#1a1a1a] hover:bg-[#141414] transition-colors">
-                      <td className="px-4 py-2.5">
-                        <div className="font-medium">{pos.symbol}</div>
-                        <div className="text-xs text-muted-foreground">{pos.exchange}</div>
-                      </td>
-                      <td className="px-4 py-2.5 text-xs">
-                        <span className="bg-[#2a2a2a] text-muted-foreground px-1.5 py-0.5 rounded">
-                          {pos.product}
-                        </span>
-                      </td>
+                      <tr key={`${pos.symbol}-${pos.product}`} className="border-b border-[#1a1a1a] hover:bg-[#141414] transition-colors">
+                        <td className="px-4 py-2.5">
+                          <div className="font-medium text-xs">{pos.symbol}</div>
+                          <div className="text-xs text-muted-foreground">{pos.exchange}</div>
+                        </td>
+                      <td className="px-4 py-1.5 text-xs">
+                          <span className="bg-[#2a2a2a] text-muted-foreground px-1.5 py-0.5 rounded">
+                            {pos.product}
+                          </span>
+                        </td>
                       <td className={`px-4 py-2.5 text-right ${pos.quantity >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {pos.quantity > 0 ? "+" : ""}{pos.quantity}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">₹{pos.avgPrice.toFixed(2)}</td>
-                      <td className="px-4 py-2.5 text-right font-mono text-xs">₹{posLtp.toFixed(2)}</td>
+                          {pos.quantity > 0 ? "+" : ""}{pos.quantity}
+                        </td>
+                      <td className="px-4 py-1.5 text-right font-mono text-xs">₹{pos.avgPrice.toFixed(2)}</td>
+                      <td className="px-4 py-1.5 text-right font-mono text-xs">₹{posLtp.toFixed(2)}</td>
                       <td className={`px-4 py-2.5 text-right text-xs ${posUnrealisedPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {posUnrealisedPnl >= 0 ? "+" : ""}₹{posUnrealisedPnl.toFixed(2)}
-                      </td>
+                          {posUnrealisedPnl >= 0 ? "+" : ""}₹{posUnrealisedPnl.toFixed(2)}
+                        </td>
                       <td className={`px-4 py-2.5 text-right text-xs ${posM2mPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {posM2mPnl >= 0 ? "+" : ""}₹{posM2mPnl.toFixed(2)}
-                      </td>
+                          {posM2mPnl >= 0 ? "+" : ""}₹{posM2mPnl.toFixed(2)}
+                        </td>
                       <td className="px-4 py-2.5 text-center">
-                        {sqOffQty > 0 && (
-                          <button
-                            onClick={() => navigate(
-                              `/orders?squareOff=1&symbol=${encodeURIComponent(pos.symbol)}&exchange=${encodeURIComponent(pos.exchange)}&product=${encodeURIComponent(pos.product)}&txType=${sqOffTx}&quantity=${sqOffQty}&orderType=MARKET`
-                            )}
-                            className="text-xs px-2 py-0.5 rounded border border-red-500/50 text-red-400 hover:bg-red-500/10 transition-colors"
-                            title="Square off this position at market price"
-                          >
-                            Square Off
-                          </button>
-                        )}
-                      </td>
-                    </tr>
+                          {sqOffQty > 0 && (
+                            <button
+                              onClick={() => navigate(
+                                `/orders?squareOff=1&symbol=${encodeURIComponent(pos.symbol)}&exchange=${encodeURIComponent(pos.exchange)}&product=${encodeURIComponent(pos.product)}&txType=${sqOffTx}&quantity=${sqOffQty}&orderType=MARKET`
+                              )}
+                              className="text-xs px-2 py-0.5 rounded border border-red-500/50 text-red-400 hover:bg-red-500/10 transition-colors"
+                              title="Square off this position at market price"
+                            >
+                              Square Off
+                            </button>
+                          )}
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -1058,9 +977,9 @@ export default function Dashboard() {
               <div className="px-4 py-6 text-center text-xs text-muted-foreground">
                 No open intraday positions.
               </div>
-            )
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1188,7 +1107,7 @@ function SummaryCard({
   return (
     <div className="bg-[#121212] border border-[#2a2a2a] rounded px-3 py-2.5" title={hint}>
       <p className="text-xs text-muted-foreground mb-1">{label}</p>
-      <p className={`text-sm font-semibold ${valueClass ?? ""}`}>{value}</p>
+      <p className={`text-xs font-semibold ${valueClass ?? ""}`}>{value}</p>
     </div>
   );
 }

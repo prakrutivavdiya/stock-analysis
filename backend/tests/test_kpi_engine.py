@@ -492,6 +492,47 @@ class TestEvaluateMaSlope:
 # Security: validate_formula blocks code injection
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AND / OR — None propagation semantics
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCompoundNullPropagation:
+    def test_and_both_operands_none_returns_none(self):
+        """Both PE_RATIO and EPS unavailable → AND result is None (undetermined)."""
+        df = _make_df(20)
+        result = evaluate_formula("PE_RATIO > 10 AND EPS > 5", df, None, "BOOLEAN")
+        assert result is None
+
+    def test_and_first_none_second_definitively_false_returns_none(self):
+        """
+        PE_RATIO=None, CLOSE > 9999 is False.
+        Engine uses conservative (non-short-circuit) semantics: any None operand → None.
+        Note: mathematically None AND False = False, but the engine returns None.
+        This documents the current engine behaviour.
+        """
+        df = _make_df(50, 1500.0)
+        result = evaluate_formula("PE_RATIO > 10 AND CLOSE > 9999", df, None, "BOOLEAN")
+        # Engine returns None (conservative) rather than False (short-circuit)
+        assert result is None
+
+    def test_and_first_none_second_true_returns_none(self):
+        """PE_RATIO=None; CLOSE > 100 is True. Cannot confirm both → None (undetermined)."""
+        df = _make_df(50, 1500.0)
+        result = evaluate_formula("PE_RATIO > 10 AND CLOSE > 100", df, None, "BOOLEAN")
+        # True would be wrong — PE_RATIO condition unverified
+        assert result is not True
+
+    def test_ema_slope_insufficient_data_returns_none(self):
+        """EMA_SLOPE with fewer rows than period must return None, not crash."""
+        df = _make_df(5)
+        result = evaluate_formula("EMA_SLOPE(20)", df, None, "SCALAR")
+        assert result is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Security: validate_formula blocks code injection
+# ─────────────────────────────────────────────────────────────────────────────
+
 class TestFormulaSecurityValidation:
     def test_lambda_is_blocked(self):
         with pytest.raises(FormulaValidationError):

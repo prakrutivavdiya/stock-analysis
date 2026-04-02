@@ -7,18 +7,26 @@
  *   CH-06 — Symbol sidebar with holdings search filter
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
 
 // Mock Canvas-dependent libraries before any component imports
 vi.mock('lightweight-charts', () => ({
   createChart: vi.fn(() => ({
-    addSeries: vi.fn(() => ({ setData: vi.fn(), createPriceLine: vi.fn(() => ({})), removePriceLine: vi.fn() })),
+    addSeries: vi.fn(() => ({
+      setData: vi.fn(),
+      createPriceLine: vi.fn(() => ({})),
+      removePriceLine: vi.fn(),
+      setMarkers: vi.fn(),
+      coordinateToPrice: vi.fn(() => 1500),
+    })),
     remove: vi.fn(),
     applyOptions: vi.fn(),
     timeScale: vi.fn(() => ({ fitContent: vi.fn() })),
     resize: vi.fn(),
+    subscribeClick: vi.fn(),
+    removeSeries: vi.fn(),
   })),
   ColorType: { Solid: 'solid' },
   LineStyle: { Dashed: 1, SparseDotted: 3 },
@@ -49,6 +57,12 @@ vi.mock('../../app/api/client', () => ({
     status: number
     constructor(message: string, status: number) { super(message); this.status = status }
   },
+}))
+
+vi.mock('../../app/api/charts', () => ({
+  getDrawings: vi.fn(() => Promise.resolve({ instrument_token: 408065, interval: 'day', drawings: [] })),
+  createDrawing: vi.fn(() => Promise.resolve({ id: 'draw-1', instrument_token: 408065, tradingsymbol: 'INFY', exchange: 'NSE', interval: 'day', drawing_type: 'hline', drawing_data: { price: 1500 }, label: null, created_at: '', updated_at: '' })),
+  deleteDrawing: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../../app/api/preferences', () => ({
@@ -296,9 +310,9 @@ describe('Charts — CH-02: indicators dropdown', () => {
 // ── CH-06: Symbol sidebar ─────────────────────────────────────────────────────
 
 describe('Charts — CH-06: symbol sidebar', () => {
-  it('renders holdings search input in sidebar', () => {
+  it('renders instrument search input in sidebar', () => {
     renderCharts()
-    expect(screen.getByPlaceholderText(/search holdings/i)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/search instruments/i)).toBeInTheDocument()
   })
 
   it('renders INFY in the sidebar', () => {
@@ -312,11 +326,14 @@ describe('Charts — CH-06: symbol sidebar', () => {
     expect(screen.getAllByText('HDFCBANK').length).toBeGreaterThan(0)
   })
 
-  it('filtering the sidebar hides non-matching symbols', async () => {
+  it('typing in the search box calls searchInstruments API', async () => {
+    const { searchInstruments } = await import('../../app/api/instruments')
     renderCharts()
-    const searchBox = screen.getByPlaceholderText(/search holdings/i)
+    const searchBox = screen.getByPlaceholderText(/search instruments/i)
     await userEvent.type(searchBox, 'INFY')
-    expect(screen.queryByText('HDFCBANK')).not.toBeInTheDocument()
+    // debounce is 300ms — wait for it
+    await new Promise((r) => setTimeout(r, 400))
+    expect(searchInstruments).toHaveBeenCalledWith('INFY')
   })
 
   it('clicking a symbol in the sidebar updates the active symbol label', async () => {
@@ -467,5 +484,133 @@ describe('Charts — Volume indicator', () => {
     // The Volume indicator item label is a <span> inside a button
     const volSpan = findVolumeSpan()
     expect(volSpan).toBeInTheDocument()
+  })
+})
+
+// ── CH-DRAWINGS: Drawing tools toolbar ───────────────────────────────────────
+
+describe('Charts — CH-DRAWINGS: drawing tools', () => {
+  it('renders the "Draw" toolbar with three tool buttons', () => {
+    renderCharts()
+    expect(screen.getByTestId('draw-hline')).toBeInTheDocument()
+    expect(screen.getByTestId('draw-trendline')).toBeInTheDocument()
+    expect(screen.getByTestId('draw-text')).toBeInTheDocument()
+  })
+
+  it('draw-hline button has title "Horizontal line"', () => {
+    renderCharts()
+    expect(screen.getByTestId('draw-hline').title).toBe('Horizontal line')
+  })
+
+  it('draw-trendline button has title "Trendline"', () => {
+    renderCharts()
+    expect(screen.getByTestId('draw-trendline').title).toBe('Trendline')
+  })
+
+  it('draw-text button has title "Text annotation"', () => {
+    renderCharts()
+    expect(screen.getByTestId('draw-text').title).toBe('Text annotation')
+  })
+
+  it('clicking hline activates it (orange accent class)', async () => {
+    renderCharts()
+    const btn = screen.getByTestId('draw-hline')
+    await userEvent.click(btn)
+    expect(btn.className).toContain('FF6600')
+  })
+
+  it('clicking the active hline button again deactivates it', async () => {
+    renderCharts()
+    const btn = screen.getByTestId('draw-hline')
+    await userEvent.click(btn) // activate
+    await userEvent.click(btn) // deactivate
+    expect(btn.className).not.toContain('FF6600')
+  })
+
+  it('switching from hline to trendline deactivates hline', async () => {
+    renderCharts()
+    await userEvent.click(screen.getByTestId('draw-hline'))
+    await userEvent.click(screen.getByTestId('draw-trendline'))
+    expect(screen.getByTestId('draw-hline').className).not.toContain('FF6600')
+    expect(screen.getByTestId('draw-trendline').className).toContain('FF6600')
+  })
+
+  it('drawings chips row is hidden when no drawings exist', () => {
+    renderCharts()
+    // getDrawings mock returns [] so no chips
+    expect(screen.queryByText('Drawings:')).not.toBeInTheDocument()
+  })
+
+  it('drawings chips row appears after a drawing is loaded', async () => {
+    const { getDrawings: mockGetDrawings } = await import('../../app/api/charts')
+    ;(mockGetDrawings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      instrument_token: 408065,
+      interval: 'day',
+      drawings: [
+        { id: 'draw-1', instrument_token: 408065, tradingsymbol: 'INFY', exchange: 'NSE',
+          interval: 'day', drawing_type: 'hline', drawing_data: { price: 1500 },
+          label: null, created_at: '', updated_at: '' },
+      ],
+    })
+    renderCharts()
+    await waitFor(() => {
+      expect(screen.queryByText('Drawings:')).toBeInTheDocument()
+    })
+  })
+
+  it('drawing chip shows delete button', async () => {
+    const { getDrawings: mockGetDrawings } = await import('../../app/api/charts')
+    ;(mockGetDrawings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      instrument_token: 408065,
+      interval: 'day',
+      drawings: [
+        { id: 'draw-x', instrument_token: 408065, tradingsymbol: 'INFY', exchange: 'NSE',
+          interval: 'day', drawing_type: 'hline', drawing_data: { price: 1500 },
+          label: null, created_at: '', updated_at: '' },
+      ],
+    })
+    renderCharts()
+    await waitFor(() => {
+      expect(screen.queryByTestId('delete-drawing-draw-x')).toBeInTheDocument()
+    })
+  })
+})
+
+describe('Charts — Reset chart', () => {
+  it('renders the Reset button in the drawing toolbar', () => {
+    renderCharts()
+    expect(screen.getByTestId('reset-chart')).toBeInTheDocument()
+    expect(screen.getByTestId('reset-chart')).toHaveTextContent('Reset')
+  })
+
+  it('first click changes button to Confirm reset?', async () => {
+    renderCharts()
+    const btn = screen.getByTestId('reset-chart')
+    await userEvent.click(btn)
+    expect(btn).toHaveTextContent('Confirm reset?')
+  })
+
+  it('second click calls saveChartPreferences with defaults and clears drawings', async () => {
+    const { getDrawings: mockGetDrawings } = await import('../../app/api/charts')
+    ;(mockGetDrawings as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      instrument_token: 408065,
+      interval: 'day',
+      drawings: [],
+    })
+    const { saveChartPreferences: mockSavePrefs } = await import('../../app/api/preferences')
+    renderCharts()
+    const btn = screen.getByTestId('reset-chart')
+    // first click — confirm mode
+    await userEvent.click(btn)
+    expect(btn).toHaveTextContent('Confirm reset?')
+    // second click — executes reset
+    await userEvent.click(btn)
+    await waitFor(() => {
+      expect(mockSavePrefs).toHaveBeenCalledWith(
+        expect.objectContaining({ interval: 'D', chart_type: 'candle', active_indicators: [] })
+      )
+    })
+    // button should revert to normal label
+    expect(btn).toHaveTextContent('Reset')
   })
 })

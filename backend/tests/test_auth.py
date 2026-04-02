@@ -20,6 +20,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import func, select
+
 from backend.config import settings
 from backend.models import RefreshToken, User
 from tests.conftest import USER_ID, seed_user
@@ -293,3 +295,80 @@ async def test_me_returns_user_profile(client: AsyncClient, mock_user: MagicMock
     assert body["email"] == mock_user.email
     assert "kite_session_valid" in body
     assert body["kite_session_valid"] is True  # token expires in +8 hours
+
+
+async def test_me_returns_kite_session_invalid_when_token_expired(
+    client: AsyncClient, mock_user: MagicMock
+) -> None:
+    """kite_session_valid=False when kite_token_expires_at is in the past."""
+    mock_user.kite_token_expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    response = await client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["kite_session_valid"] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Security: Refresh token replay attack
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_refresh_token_replay_attack_blocked(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Replaying an already-rotated refresh token must return 401."""
+    raw_rt = await _create_refresh_token(db_session)
+
+    # First use — legitimate rotation
+    r1 = await client.post(
+        "/api/v1/auth/refresh",
+        cookies={"refresh_token": raw_rt},
+    )
+    assert r1.status_code == 200, "First refresh must succeed"
+
+    # Second use — replay attack with the now-revoked token
+    r2 = await client.post(
+        "/api/v1/auth/refresh",
+        cookies={"refresh_token": raw_rt},
+    )
+    assert r2.status_code == 401, "Replayed (already-rotated) token must be rejected"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Callback: upsert — second login updates existing user, no duplicate
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_callback_upsert_updates_existing_user(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Second login for the same Kite user_id updates the existing row; no duplicate created."""
+    from sqlalchemy import select, func
+
+    with (
+        patch("backend.routers.auth.KiteConnect") as MockKite,
+        patch("backend.routers.auth.encrypt_token", return_value="enc"),
+    ):
+        instance = MockKite.return_value
+        instance.generate_session = MagicMock(return_value=_mock_kite_session("REPEAT_USER"))
+        instance.profile = MagicMock(return_value=_mock_kite_profile("REPEAT_USER"))
+
+        # First login
+        await client.get("/api/v1/auth/callback", params={"request_token": "tok1"})
+
+        # Second login — updated name (Kite allows name changes)
+        instance.profile = MagicMock(return_value={
+            **_mock_kite_profile("REPEAT_USER"),
+            "user_name": "Updated Name",
+        })
+        await client.get("/api/v1/auth/callback", params={"request_token": "tok2"})
+
+    # Must be exactly one row
+    count = (await db_session.execute(
+        select(func.count(User.id)).where(User.kite_user_id == "REPEAT_USER")
+    )).scalar_one()
+    assert count == 1, "Upsert must not create duplicate users"
+
+    user = (await db_session.execute(
+        select(User).where(User.kite_user_id == "REPEAT_USER")
+    )).scalar_one()
+    assert user.username == "Updated Name"

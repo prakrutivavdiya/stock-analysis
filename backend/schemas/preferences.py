@@ -5,6 +5,20 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+ColFilterType = Literal["text", "range", "boolean", "categorical"]
+
+
+class ColumnDefinition(BaseModel):
+    id: str
+    label: str
+    align: Literal["left", "right"] = "left"
+    default_visible: bool = False
+    filter_type: ColFilterType = "text"
+
+
+class ColumnsResponse(BaseModel):
+    columns: list[ColumnDefinition]
+
 
 class HoldingsSortPreference(BaseModel):
     column: str = Field(default="symbol", description="Column to sort by")
@@ -24,6 +38,10 @@ class UIPreferences(BaseModel):
     visible_holdings_columns: list[str] = Field(
         default_factory=list,
         description="List of visible column IDs in the holdings table",
+    )
+    visible_user_kpi_columns: list[str] = Field(
+        default_factory=list,
+        description="Ordered list of user KPI names visible as columns in the holdings table",
     )
     holdings_sort: HoldingsSortPreference = Field(
         default_factory=HoldingsSortPreference,

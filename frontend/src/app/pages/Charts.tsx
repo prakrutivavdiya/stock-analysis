@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router";
 import {
   createChart,
@@ -11,13 +11,16 @@ import {
   HistogramSeries,
   type IChartApi,
   type UTCTimestamp,
+  type IPriceLine,
 } from "lightweight-charts";
-import { ChevronDown, Check, Search } from "lucide-react";
+import { ChevronDown, Check, Search, Minus, TrendingUp, Type, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import { useAppStore } from "../data/store";
 import { searchInstruments } from "../api/instruments";
 import { apiFetch } from "../api/client";
-import type { InstrumentResult } from "../api/types";
+import type { InstrumentResult, DrawingOut } from "../api/types";
 import { getChartPreferences, saveChartPreferences } from "../api/preferences";
+import { getDrawings, createDrawing, deleteDrawing } from "../api/charts";
 
 // ---------------------------------------------------------------------------
 // Intervals & chart types
@@ -197,6 +200,17 @@ function aggregateToMonthly(candles: CandleData[]): CandleData[] {
 }
 
 // ---------------------------------------------------------------------------
+// Drawing types
+// ---------------------------------------------------------------------------
+
+type DrawingMode = "none" | "hline" | "trendline" | "text";
+
+// Lightweight Charts v5 generic series type; cast needed for setMarkers (not in all union members)
+type AnySeriesApi = ReturnType<IChartApi["addSeries"]>;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type MarkerSeries = AnySeriesApi & { setMarkers: (markers: any[]) => void };
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -209,6 +223,8 @@ export default function Charts() {
   const [interval,  setInterval]  = useState("D");
   const [chartType, setChartType] = useState("candle");
   const [search,    setSearch]    = useState("");
+  const [searchResults, setSearchResults] = useState<{ symbol: string; exchange: string }[] | null>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeIndicators, setActiveIndicators] = useState<string[]>([]);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
@@ -238,12 +254,41 @@ export default function Charts() {
   const seriesRef  = useRef<ReturnType<IChartApi["addSeries"]> | null>(null);
   const tokenRef   = useRef<number | null>(null);
 
+  // Drawing tools state & refs
+  const [drawingMode, setDrawingMode] = useState<DrawingMode>("none");
+  const [drawings, setDrawings] = useState<DrawingOut[]>([]);
+  const [trendlineAnchor, setTrendlineAnchor] = useState<{ time: UTCTimestamp; price: number } | null>(null);
+  const drawingModeRef = useRef<DrawingMode>("none");
+  const trendlineAnchorRef = useRef<{ time: UTCTimestamp; price: number } | null>(null);
+  // Map from drawing id → { type, obj } for live removal
+  const drawingObjectsRef = useRef<Map<string, { type: string; obj: unknown }>>(new Map());
+  const textMarkersRef = useRef<{ time: UTCTimestamp; position: "aboveBar"; color: string; shape: "arrowDown"; text: string; size: number; drawingId: string }[]>([]);
+
+
+  // Reset chart confirm state (two-click pattern)
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keep refs in sync with state
+  useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
+  useEffect(() => { trendlineAnchorRef.current = trendlineAnchor; }, [trendlineAnchor]);
+
   const holdingsData    = useAppStore((s) => s.holdings.data);
   const storeHoldings   = holdingsData ?? [];
   const holdingSymbols  = storeHoldings.map((h) => ({ symbol: h.symbol, exchange: h.exchange }));
-  const filteredSymbols = search
-    ? holdingSymbols.filter((h) => h.symbol.toLowerCase().includes(search.toLowerCase()))
-    : holdingSymbols;
+
+  // Live instrument search while user types
+  useEffect(() => {
+    if (!search) { setSearchResults(null); return; }
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      searchInstruments(search)
+        .then((res) => setSearchResults(
+          res.results.map((r) => ({ symbol: r.tradingsymbol, exchange: r.exchange }))
+        ))
+        .catch(() => setSearchResults([]));
+    }, 300);
+    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
+  }, [search]);
 
   const toggleIndicator = (key: string) =>
     setActiveIndicators((prev) => {
@@ -255,6 +300,160 @@ export default function Charts() {
   const selectSymbol = (sym: string, exch: string) => {
     setSymbol(sym); setExchange(exch); setSearch("");
     navigate(`/charts/${sym}`, { replace: true });
+  };
+
+  // ── Drawing handlers ───────────────────────────────────────────────────────
+
+  const renderDrawing = useCallback((chart: IChartApi, series: ReturnType<IChartApi["addSeries"]>, d: DrawingOut) => {
+    if (d.drawing_type === "hline") {
+      const price = d.drawing_data.price as number;
+      const pl = series.createPriceLine({
+        price, color: "#FF6600", lineWidth: 1, lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true, title: d.label ?? "H",
+      });
+      drawingObjectsRef.current.set(d.id, { type: "hline", obj: pl });
+    } else if (d.drawing_type === "trendline") {
+      const { time1, price1, time2, price2 } = d.drawing_data as { time1: UTCTimestamp; price1: number; time2: UTCTimestamp; price2: number };
+      const tl = chart.addSeries(LineSeries, {
+        color: "#FF6600", lineWidth: 1,
+        crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
+      } as Parameters<typeof chart.addSeries>[1]);
+      tl.setData([{ time: time1, value: price1 }, { time: time2, value: price2 }]);
+      drawingObjectsRef.current.set(d.id, { type: "trendline", obj: tl });
+    } else if (d.drawing_type === "text") {
+      const { time, text } = d.drawing_data as { time: UTCTimestamp; text: string };
+      const marker = { time, position: "aboveBar" as const, color: "#FF6600", shape: "arrowDown" as const, text, size: 1, drawingId: d.id };
+      textMarkersRef.current = [...textMarkersRef.current, marker];
+    }
+  }, []);
+
+  const handleAddHLine = useCallback(async (price: number, token: number, backendInterval: string) => {
+    if (!seriesRef.current) return;
+    const pl = seriesRef.current.createPriceLine({
+      price, color: "#FF6600", lineWidth: 1, lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true, title: "H",
+    });
+    try {
+      const saved = await createDrawing(token, { interval: backendInterval, drawing_type: "hline", drawing_data: { price } });
+      setDrawings((p) => [...p, saved]);
+      drawingObjectsRef.current.set(saved.id, { type: "hline", obj: pl });
+    } catch {
+      seriesRef.current?.removePriceLine(pl as IPriceLine);
+      toast.error("Failed to save drawing");
+    }
+    setDrawingMode("none");
+  }, []);
+
+  const handleAddTrendline = useCallback(async (
+    start: { time: UTCTimestamp; price: number },
+    end: { time: UTCTimestamp; price: number },
+    token: number,
+    backendInterval: string,
+  ) => {
+    if (!chartRef.current) return;
+    const [t1, t2] = start.time <= end.time ? [start, end] : [end, start];
+    const tl = chartRef.current.addSeries(LineSeries, {
+      color: "#FF6600", lineWidth: 1,
+      crosshairMarkerVisible: false, priceLineVisible: false, lastValueVisible: false,
+    } as Parameters<typeof chartRef.current.addSeries>[1]);
+    tl.setData([{ time: t1.time, value: t1.price }, { time: t2.time, value: t2.price }]);
+    try {
+      const saved = await createDrawing(token, {
+        interval: backendInterval, drawing_type: "trendline",
+        drawing_data: { time1: t1.time, price1: t1.price, time2: t2.time, price2: t2.price },
+      });
+      setDrawings((p) => [...p, saved]);
+      drawingObjectsRef.current.set(saved.id, { type: "trendline", obj: tl });
+    } catch {
+      chartRef.current?.removeSeries(tl);
+      toast.error("Failed to save drawing");
+    }
+    setDrawingMode("none");
+  }, []);
+
+  const handleAddText = useCallback(async (time: UTCTimestamp, token: number, backendInterval: string) => {
+    const text = window.prompt("Annotation text:");
+    if (!text?.trim()) { setDrawingMode("none"); return; }
+    try {
+      const saved = await createDrawing(token, {
+        interval: backendInterval, drawing_type: "text",
+        drawing_data: { time, text: text.trim() }, label: text.trim(),
+      });
+      const marker = { time, position: "aboveBar" as const, color: "#FF6600", shape: "arrowDown" as const, text: text.trim(), size: 1, drawingId: saved.id };
+      textMarkersRef.current = [...textMarkersRef.current, marker];
+      (seriesRef.current as MarkerSeries | null)?.setMarkers(textMarkersRef.current);
+      setDrawings((p) => [...p, saved]);
+    } catch {
+      toast.error("Failed to save drawing");
+    }
+    setDrawingMode("none");
+  }, []);
+
+  const handleDeleteDrawing = useCallback((id: string) => {
+    const entry = drawingObjectsRef.current.get(id);
+    try {
+      if (entry?.type === "hline") {
+        seriesRef.current?.removePriceLine(entry.obj as IPriceLine);
+      } else if (entry?.type === "trendline") {
+        chartRef.current?.removeSeries(entry.obj as ReturnType<IChartApi["addSeries"]>);
+      }
+    } catch {
+      // price line / series may already be gone if chart was rebuilt
+    }
+    drawingObjectsRef.current.delete(id);
+    textMarkersRef.current = textMarkersRef.current.filter((m) => m.drawingId !== id);
+    try {
+      (seriesRef.current as MarkerSeries | null)?.setMarkers(textMarkersRef.current);
+    } catch {
+      // series may have been removed
+    }
+    setDrawings((p) => p.filter((d) => d.id !== id));
+    if (tokenRef.current) deleteDrawing(tokenRef.current, id).catch(() => {});
+  }, []);
+
+  const handleResetChart = async () => {
+    const token = tokenRef.current;
+    // Collect all drawing IDs visible on current chart
+    const idsToDelete = [
+      ...Array.from(drawingObjectsRef.current.keys()),
+      ...textMarkersRef.current.map((m) => m.drawingId),
+    ];
+    // Delete from backend (best-effort, in parallel)
+    if (token && idsToDelete.length > 0) {
+      await Promise.allSettled(idsToDelete.map((id) => deleteDrawing(token, id)));
+    }
+    // Remove visual drawing objects from chart canvas
+    drawingObjectsRef.current.forEach((entry) => {
+      try {
+        if (entry.type === "hline") seriesRef.current?.removePriceLine(entry.obj as IPriceLine);
+        else if (entry.type === "trendline") chartRef.current?.removeSeries(entry.obj as ReturnType<IChartApi["addSeries"]>);
+      } catch {}
+    });
+    drawingObjectsRef.current.clear();
+    textMarkersRef.current = [];
+    try { (seriesRef.current as MarkerSeries | null)?.setMarkers([]); } catch {}
+    // Clear drawing state
+    setDrawings([]);
+    setDrawingMode("none");
+    setTrendlineAnchor(null);
+    // Reset chart settings to defaults
+    setInterval("D");
+    setChartType("candle");
+    setActiveIndicators([]);
+    saveChartPreferences({ interval: "D", chart_type: "candle", active_indicators: [] }).catch(() => {});
+    toast.success("Chart reset to defaults");
+  };
+
+  const onResetClick = () => {
+    if (!resetConfirm) {
+      setResetConfirm(true);
+      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = setTimeout(() => setResetConfirm(false), 3000);
+    } else {
+      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+      setResetConfirm(false);
+      handleResetChart();
+    }
   };
 
   // Close panel on outside click
@@ -505,6 +704,42 @@ export default function Charts() {
 
         chart.timeScale().fitContent();
 
+        // ── Drawing: load existing + subscribe click ───────────────────
+        drawingObjectsRef.current.clear();
+        textMarkersRef.current = [];
+        setDrawings([]);
+
+        getDrawings(token, backendInterval)
+          .then(({ drawings: saved }) => {
+            if (cancelled || !saved) return;
+            setDrawings(saved);
+            saved.forEach((d) => renderDrawing(chart, priceSeries, d));
+            if (textMarkersRef.current.length > 0)
+              (priceSeries as MarkerSeries).setMarkers(textMarkersRef.current);
+          })
+          .catch(() => {});
+
+        chart.subscribeClick((params) => {
+          if (!params.point || !params.time) return;
+          const price = priceSeries.coordinateToPrice(params.point.y);
+          if (price == null) return;
+          const time = params.time as UTCTimestamp;
+          const mode = drawingModeRef.current;
+          if (mode === "hline") {
+            handleAddHLine(price, token, backendInterval);
+          } else if (mode === "trendline") {
+            const anchor = trendlineAnchorRef.current;
+            if (!anchor) {
+              setTrendlineAnchor({ time, price });
+            } else {
+              setTrendlineAnchor(null);
+              handleAddTrendline(anchor, { time, price }, token, backendInterval);
+            }
+          } else if (mode === "text") {
+            handleAddText(time, token, backendInterval);
+          }
+        });
+
         // ── Resize observer ───────────────────────────────────────────────
         const ro = new ResizeObserver(() => {
           if (containerRef.current && chartRef.current)
@@ -525,8 +760,10 @@ export default function Charts() {
       cancelled = true;
       chartRef.current?.remove();  chartRef.current = null;
       roRef.current?.disconnect(); roRef.current    = null;
+      drawingObjectsRef.current.clear();
+      textMarkersRef.current = [];
     };
-  }, [symbol, exchange, interval, chartType, activeIndicators, retryKey, prefsLoaded]);
+  }, [symbol, exchange, interval, chartType, activeIndicators, retryKey, prefsLoaded, renderDrawing, handleAddHLine, handleAddTrendline, handleAddText]);
 
   // ── Live candle updates from KiteTicker ───────────────────────────────────
   useEffect(() => {
@@ -571,15 +808,43 @@ export default function Charts() {
     <div className="flex h-full">
       {/* Symbol sidebar */}
       <aside className="w-48 shrink-0 border-r border-[#2a2a2a] flex flex-col bg-[#0f0f0f]">
-        <div className="p-3 border-b border-[#2a2a2a]">
+        <div className="p-3 border-b border-[#2a2a2a] relative">
           <input
-            type="text" placeholder="Search holdings…" value={search}
+            type="text" placeholder="Search instruments…" value={search}
             onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && setSearch("")}
             className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs placeholder:text-muted-foreground focus:outline-none focus:border-[#FF6600]"
           />
+          {/* Search results dropdown */}
+          {search && (
+            <div className="absolute left-3 right-3 top-full mt-1 z-50 bg-[#1a1a1a] border border-[#2a2a2a] rounded shadow-xl max-h-60 overflow-y-auto">
+              {searchResults === null ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">Searching…</div>
+              ) : searchResults.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-muted-foreground">No results</div>
+              ) : (
+                searchResults.map((r) => (
+                  <button
+                    key={`${r.exchange}:${r.symbol}`}
+                    onClick={() => selectSymbol(r.symbol, r.exchange)}
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-[#2a2a2a] transition-colors"
+                  >
+                    <span className="font-medium text-foreground">{r.symbol}</span>
+                    <span className="ml-1.5 text-muted-foreground">{r.exchange}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        {/* Holdings list — always visible */}
+        <div className="px-3 pt-2 pb-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Holdings</span>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {filteredSymbols.map((h) => (
+          {holdingSymbols.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-muted-foreground">No holdings</div>
+          ) : holdingSymbols.map((h) => (
             <button
               key={`${h.exchange}:${h.symbol}`}
               onClick={() => selectSymbol(h.symbol, h.exchange)}
@@ -749,6 +1014,78 @@ export default function Charts() {
                 </span>
               );
             })}
+          </div>
+        )}
+
+        {/* Drawing tools toolbar */}
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-[#2a2a2a] bg-[#0f0f0f]">
+          <span className="text-xs text-muted-foreground mr-1">Draw</span>
+          {([
+            { key: "hline",     label: "Horizontal line", Icon: Minus },
+            { key: "trendline", label: "Trendline",        Icon: TrendingUp },
+            { key: "text",      label: "Text annotation",  Icon: Type },
+          ] as const).map(({ key, label, Icon }) => (
+            <button
+              key={key}
+              data-testid={`draw-${key}`}
+              onClick={() => {
+                setDrawingMode((d) => (d === key ? "none" : key));
+                setTrendlineAnchor(null);
+              }}
+              title={label}
+              className={`p-1.5 rounded transition-colors ${
+                drawingMode === key
+                  ? "bg-[#FF6600]/20 text-[#FF6600]"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+            </button>
+          ))}
+          {trendlineAnchor && (
+            <span className="text-xs text-[#FF6600] ml-2">Click second point…</span>
+          )}
+          {/* Reset chart button — right-aligned, two-click confirm */}
+          <button
+            data-testid="reset-chart"
+            onClick={onResetClick}
+            title="Reset chart: clear all drawings and restore default settings"
+            className={`ml-auto flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+              resetConfirm
+                ? "bg-red-500/20 text-red-400 border border-red-500/40"
+                : "text-muted-foreground hover:text-foreground hover:bg-[#2a2a2a]"
+            }`}
+          >
+            <RotateCcw className="w-3 h-3" />
+            {resetConfirm ? "Confirm reset?" : "Reset"}
+          </button>
+        </div>
+
+        {/* Active drawings chips */}
+        {drawings.length > 0 && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[#2a2a2a] bg-[#0f0f0f] flex-wrap">
+            <span className="text-xs text-muted-foreground">Drawings:</span>
+            {drawings.map((d) => (
+              <span
+                key={d.id}
+                data-testid={`drawing-chip-${d.id}`}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#2a2a2a] text-xs"
+              >
+                <span className="text-muted-foreground">
+                  {d.drawing_type === "hline" ? "—" : d.drawing_type === "trendline" ? "↗" : "T"}
+                </span>
+                {d.label && (
+                  <span className="text-muted-foreground truncate max-w-[60px]">{d.label}</span>
+                )}
+                <button
+                  data-testid={`delete-drawing-${d.id}`}
+                  onClick={() => handleDeleteDrawing(d.id)}
+                  className="text-muted-foreground hover:text-red-400 ml-1"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
           </div>
         )}
 

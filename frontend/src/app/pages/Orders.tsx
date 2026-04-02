@@ -363,6 +363,20 @@ export default function Orders() {
     return null;
   }, [orderForm.quantity]);
 
+  // F&O lot-size validation: qty must be a multiple of selectedInstrument.lot_size
+  const lotSizeError = useMemo(() => {
+    if (!orderForm.quantity || !selectedInstrument?.lot_size) return null;
+    const qty = Number(orderForm.quantity);
+    const lot = selectedInstrument.lot_size;
+    if (lot <= 1) return null;
+    if (qty % lot !== 0) {
+      const lower = Math.floor(qty / lot) * lot;
+      const upper = lower + lot;
+      return `Quantity must be a multiple of lot size (${lot}). Nearest valid: ${lower > 0 ? lower : upper} or ${upper}.`;
+    }
+    return null;
+  }, [orderForm.quantity, selectedInstrument?.lot_size]);
+
   // Price required for LIMIT / SL
   const priceRequiredError = useMemo(() => {
     const requiresPrice = orderForm.orderType === "LIMIT" || orderForm.orderType === "SL";
@@ -381,22 +395,24 @@ export default function Orders() {
     return null;
   }, [orderForm.orderType, orderForm.triggerPrice]);
 
-  // Tick size: NSE/BSE equity prices must be in multiples of ₹0.05
+  // Tick size: use selectedInstrument.tick_size if available, else default for equity
   const tickSizeError = useMemo(() => {
-    const isEquity = isEquityExchange(orderForm.exchange);
-    if (!isEquity) return null;
+    const tick = selectedInstrument?.tick_size
+      ?? (isEquityExchange(orderForm.exchange) ? 0.05 : null);
+    if (!tick) return null;
+    const inv = Math.round(1 / tick);
     const checkTick = (val: string) => {
       const v = Number(val);
       if (!val || !v) return true;
-      return Math.abs(Math.round(v * 20) - v * 20) < 0.0001;
+      return Math.abs(Math.round(v * inv) - v * inv) < 0.0001;
     };
     const errors: string[] = [];
     if (orderForm.price && !checkTick(orderForm.price))
-      errors.push("Price must be a multiple of ₹0.05.");
+      errors.push(`Price must be a multiple of ₹${tick}.`);
     if (orderForm.triggerPrice && !checkTick(orderForm.triggerPrice))
-      errors.push("Trigger price must be a multiple of ₹0.05.");
+      errors.push(`Trigger price must be a multiple of ₹${tick}.`);
     return errors.length > 0 ? errors.join(" ") : null;
-  }, [orderForm.price, orderForm.triggerPrice, orderForm.exchange]);
+  }, [orderForm.price, orderForm.triggerPrice, orderForm.exchange, selectedInstrument?.tick_size]);
 
   // Estimated charges for confirmation dialog
   const charges = useMemo(() => {
@@ -441,6 +457,7 @@ export default function Orders() {
     !!orderForm.symbol &&
     !!orderForm.quantity &&
     !qtyError &&
+    !lotSizeError &&
     !priceRequiredError &&
     !triggerRequiredError &&
     !slValidationError &&
@@ -897,6 +914,8 @@ export default function Orders() {
 
               {/* Qty validation */}
               {qtyError && <Warn color="red">{qtyError}</Warn>}
+              {/* F&O lot-size validation */}
+              {lotSizeError && <Warn color="amber">{lotSizeError}</Warn>}
               {/* CNC oversell — hard block */}
               {oversellError && <Warn color="red">{oversellError}</Warn>}
               {/* MIS/NRML oversell — soft warning */}

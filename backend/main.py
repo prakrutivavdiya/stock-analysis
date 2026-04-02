@@ -207,6 +207,7 @@ app.include_router(charts.router,       prefix=f"{_V1}/charts",        tags=["ch
 app.include_router(orders.router,       prefix=f"{_V1}/orders",        tags=["orders"])
 app.include_router(gtt.router,          prefix=f"{_V1}/gtt",           tags=["gtt"])
 app.include_router(audit.router,        prefix=f"{_V1}/audit",         tags=["audit"])
-app.include_router(preferences.router,  prefix=f"{_V1}/user/preferences", tags=["preferences"])
+app.include_router(preferences.columns_router, prefix=f"{_V1}/user/columns",      tags=["preferences"])
+app.include_router(preferences.router,         prefix=f"{_V1}/user/preferences",  tags=["preferences"])
 app.include_router(watchlist.router,    prefix=f"{_V1}/watchlist",         tags=["watchlist"])
 app.include_router(ws.router,           tags=["ws"])  # /ws/quotes — no /api/v1 prefix

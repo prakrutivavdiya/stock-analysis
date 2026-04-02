@@ -407,10 +407,28 @@ export interface ChartPreferencesResponse {
 
 export interface UIPreferences {
   visible_holdings_columns: string[];
+  visible_user_kpi_columns?: string[];
   holdings_sort: HoldingsSortPreference;
   chart_prefs?: ChartPreferences;
 }
 
 export interface UIPreferencesResponse {
   preferences: UIPreferences;
+}
+
+// Column Definitions (GET /user/columns)
+// ---------------------------------------------------------------------------
+
+export type ColFilterType = "text" | "range" | "boolean" | "categorical";
+
+export interface ColumnDefinition {
+  id: string;
+  label: string;
+  align: "left" | "right";
+  default_visible: boolean;
+  filter_type: ColFilterType;
+}
+
+export interface ColumnsResponse {
+  columns: ColumnDefinition[];
 }

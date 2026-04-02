@@ -11,12 +11,14 @@ Tests for /api/v1/kpis endpoints.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.models import KPI
 from tests.conftest import USER_ID, seed_kpi, seed_ohlcv, seed_user
 
 
@@ -268,3 +270,111 @@ async def test_portfolio_kpis_with_holdings(
     assert len(body["kpis"]) == 1
     assert len(body["results"]) == 1
     assert body["results"][0]["tradingsymbol"] == "INFY"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Security: user isolation — User B must not see User A's KPIs
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_kpi_user_isolation(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """KPIs owned by a different user are not visible to the authenticated user."""
+    other_user_id = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    other_kpi = KPI(
+        user_id=other_user_id,
+        name="Other User KPI",
+        formula="CLOSE",
+        return_type="SCALAR",
+        is_active=True,
+        display_order=0,
+    )
+    db_session.add(other_kpi)
+    await db_session.commit()
+
+    response = await client.get("/api/v1/kpis")
+
+    assert response.status_code == 200
+    kpi_names = {k["name"] for k in response.json()["kpis"]}
+    assert "Other User KPI" not in kpi_names, "User must not see other users' KPIs"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# is_active=False KPI must not appear in /kpis/portfolio
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_inactive_kpi_excluded_from_portfolio(
+    client: AsyncClient, db_session: AsyncSession, mock_kite: MagicMock
+) -> None:
+    """KPI with is_active=False must not be computed or returned by /kpis/portfolio."""
+    inactive_kpi = KPI(
+        user_id=USER_ID,
+        name="Inactive KPI",
+        formula="CLOSE",
+        return_type="SCALAR",
+        is_active=False,
+        display_order=0,
+    )
+    db_session.add(inactive_kpi)
+    await db_session.commit()
+
+    mock_kite.holdings.return_value = [
+        {"instrument_token": 408065, "tradingsymbol": "INFY", "quantity": 10}
+    ]
+
+    response = await client.get("/api/v1/kpis/portfolio")
+
+    assert response.status_code == 200
+    assert response.json()["kpis"] == [], "Inactive KPIs must not appear in portfolio compute"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _load_ohlcv_df: Kite fetch path when cache is empty
+# Covers lines 152-213 of kpis.py (_load_ohlcv_df with raw_kite data)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_compute_kpi_kite_fetch_when_cache_empty(
+    client: AsyncClient, db_session: AsyncSession, mock_kite: MagicMock
+) -> None:
+    """KPI compute fetches OHLCV from Kite when cache is empty, then evaluates.
+
+    Covers: _load_ohlcv_df Kite branch (raw_kite → DataFrame → OHLCVCache insert).
+    """
+    from datetime import timedelta
+
+    kpi = await seed_kpi(db_session, formula="CLOSE", return_type="SCALAR")
+
+    # Build 30 Kite-format candles (enough for CLOSE/SMA indicators)
+    base = datetime(2026, 2, 24, 9, 15, tzinfo=timezone.utc)
+    candles = [
+        {
+            "date": base - timedelta(days=i),
+            "open":   float(1500 + i),
+            "high":   float(1520 + i),
+            "low":    float(1490 + i),
+            "close":  float(1510 + i),
+            "volume": 1_000_000,
+        }
+        for i in range(30)
+    ]
+    mock_kite.historical_data.return_value = candles
+
+    with patch("backend.routers.kpis._market_is_open", return_value=False):
+        response = await client.post(
+            f"/api/v1/kpis/{kpi.id}/compute",
+            json={
+                "instrument_tokens": [408065],
+                "as_of_date": "2026-02-24",
+                "interval": "day",
+                "tradingsymbol": "INFY",
+                "exchange": "NSE",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "408065" in body["results"]
+    result = body["results"]["408065"]
+    assert result["return_type"] == "SCALAR"
+    # CLOSE with 30 candles should yield a valid numeric value
+    assert result["value"] is not None

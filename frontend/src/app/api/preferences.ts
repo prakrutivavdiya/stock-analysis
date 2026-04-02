@@ -4,6 +4,7 @@ import type {
   UIPreferencesResponse,
   ChartPreferences,
   ChartPreferencesResponse,
+  ColumnsResponse,
 } from "./types";
 
 export function getPreferences(): Promise<UIPreferencesResponse> {
@@ -15,6 +16,10 @@ export function savePreferences(prefs: UIPreferences): Promise<UIPreferencesResp
     method: "PUT",
     body: JSON.stringify(prefs),
   });
+}
+
+export function getColumns(): Promise<ColumnsResponse> {
+  return apiFetch<ColumnsResponse>("/user/columns");
 }
 
 export function getChartPreferences(): Promise<ChartPreferencesResponse> {
