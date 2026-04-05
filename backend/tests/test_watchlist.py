@@ -20,12 +20,12 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Watchlist, WatchlistItem
-from tests.conftest import USER_ID, seed_user
+from tests.conftest import OTHER_USER_ID as _OTHER_USER_ID, USER_ID, seed_other_user, seed_user
 
 # add_token is safe in tests: _ticker is None so it only appends to a list
 
-# A second user UUID for isolation tests
-OTHER_USER_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+# A second user UUID for isolation tests (imported from conftest)
+OTHER_USER_ID = _OTHER_USER_ID
 
 BASE = "/api/v1/watchlist"
 
@@ -91,7 +91,7 @@ async def test_list_watchlists_returns_own_only(
     await seed_user(db_session)
     own = await seed_watchlist(db_session, name="Mine", user_id=USER_ID)
 
-    # Insert a watchlist owned by another user directly (no FK user row needed in SQLite)
+    await seed_other_user(db_session)
     other_wl = Watchlist(user_id=OTHER_USER_ID, name="Theirs", display_order=0)
     db_session.add(other_wl)
     await db_session.commit()
@@ -206,6 +206,7 @@ async def test_rename_watchlist_other_user_404(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Cannot rename another user's watchlist — treated as 404."""
+    await seed_other_user(db_session)
     other_wl = Watchlist(user_id=OTHER_USER_ID, name="Theirs", display_order=0)
     db_session.add(other_wl)
     await db_session.commit()
@@ -279,6 +280,7 @@ async def test_delete_watchlist_not_found_404(
 async def test_delete_watchlist_other_user_404(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
+    await seed_other_user(db_session)
     other_wl = Watchlist(user_id=OTHER_USER_ID, name="Theirs", display_order=0)
     db_session.add(other_wl)
     await db_session.commit()
@@ -360,6 +362,7 @@ async def test_add_item_other_user_watchlist_404(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """Cannot add an item to another user's watchlist."""
+    await seed_other_user(db_session)
     other_wl = Watchlist(user_id=OTHER_USER_ID, name="Theirs", display_order=0)
     db_session.add(other_wl)
     await db_session.commit()
@@ -486,6 +489,7 @@ async def test_reorder_items_watchlist_not_found_404(
 async def test_reorder_items_other_user_watchlist_404(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
+    await seed_other_user(db_session)
     other_wl = Watchlist(user_id=OTHER_USER_ID, name="Theirs", display_order=0)
     db_session.add(other_wl)
     await db_session.commit()

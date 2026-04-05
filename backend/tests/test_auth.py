@@ -55,10 +55,13 @@ def _mock_kite_session(user_id: str = "ZX1234") -> dict:
 
 
 def _mock_kite_profile(user_id: str = "ZX1234") -> dict:
+    # Use a per-user email so each distinct kite_user_id doesn't collide with
+    # the seeded user row (email="test@example.com" / kite_user_id="ZX1234").
+    email = "test@example.com" if user_id == "ZX1234" else f"{user_id.lower()}@example.com"
     return {
         "user_id": user_id,
         "user_name": "Test User",
-        "email": "test@example.com",
+        "email": email,
         "exchanges": ["NSE", "BSE"],
         "products": ["CNC", "MIS", "NRML"],
     }

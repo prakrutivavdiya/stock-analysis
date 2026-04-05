@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { X, Plus, Search, Star, Pencil, Trash2, ShoppingCart } from "lucide-react";
+import { X, Plus, Search, Star, Pencil, Trash2, ShoppingCart, GripVertical } from "lucide-react";
 import { toast } from "sonner";
 import { useAppStore } from "../data/store";
 import {
@@ -9,6 +9,7 @@ import {
   deleteWatchlist,
   addToWatchlist,
   removeFromWatchlist,
+  reorderWatchlistItems,
 } from "../api/watchlist";
 import { searchInstruments } from "../api/instruments";
 import type { WatchlistOut, WatchlistItemOut, InstrumentResult } from "../api/types";
@@ -43,6 +44,8 @@ export default function WatchlistPanel({ onClose, onOrderIntent }: Props) {
   const [newListName, setNewListName] = useState("");
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const dragItemId = useRef<string | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -172,6 +175,21 @@ export default function WatchlistPanel({ onClose, onOrderIntent }: Props) {
       setWatchlists(watchlists.map((w) => (w.id === activeList.id ? updatedWl : w)));
     } catch {
       toast.error("Failed to remove");
+    }
+  }
+
+  async function handleReorder(newItems: WatchlistItemOut[]) {
+    if (!activeList) return;
+    // Optimistic update
+    const updatedWl = { ...activeList, items: newItems };
+    setWatchlists(watchlists.map((w) => (w.id === activeList.id ? updatedWl : w)));
+    try {
+      const result = await reorderWatchlistItems(activeList.id, newItems.map((i) => i.id));
+      setWatchlists(watchlists.map((w) => (w.id === activeList.id ? result : w)));
+    } catch {
+      // Rollback
+      setWatchlists(watchlists.map((w) => (w.id === activeList.id ? activeList : w)));
+      toast.error("Failed to save order");
     }
   }
 
@@ -350,11 +368,31 @@ export default function WatchlistPanel({ onClose, onOrderIntent }: Props) {
           return (
             <div
               key={item.id}
-              className="group px-3 py-2.5 border-b border-[#1a1a1a] hover:bg-[#1a1a1a] transition-colors"
+              draggable
+              onDragStart={() => { dragItemId.current = item.id; }}
+              onDragOver={(e) => { e.preventDefault(); setDragOverId(item.id); }}
+              onDragLeave={() => setDragOverId(null)}
+              onDrop={() => {
+                setDragOverId(null);
+                if (!dragItemId.current || dragItemId.current === item.id || !activeList) return;
+                const items = [...activeList.items];
+                const fromIdx = items.findIndex((i) => i.id === dragItemId.current);
+                const toIdx = items.findIndex((i) => i.id === item.id);
+                if (fromIdx === -1 || toIdx === -1) return;
+                const [moved] = items.splice(fromIdx, 1);
+                items.splice(toIdx, 0, moved);
+                handleReorder(items);
+                dragItemId.current = null;
+              }}
+              onDragEnd={() => { dragItemId.current = null; setDragOverId(null); }}
+              className={`group px-3 py-2.5 border-b border-[#1a1a1a] hover:bg-[#1a1a1a] transition-colors cursor-grab active:cursor-grabbing ${
+                dragOverId === item.id ? "border-t-2 border-t-[#FF6600]" : ""
+              }`}
             >
-              {/* Row 1: symbol + remove */}
+              {/* Row 1: grip + symbol + remove */}
               <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <GripVertical className="w-3 h-3 text-muted-foreground/30 shrink-0" />
                   <span className="font-medium text-sm truncate">{item.tradingsymbol}</span>
                   <span className="text-[10px] bg-[#2a2a2a] text-muted-foreground px-1.5 py-0.5 rounded">
                     {item.exchange}

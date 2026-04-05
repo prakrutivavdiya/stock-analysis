@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     # ── Database ──────────────────────────────────────────────────────────────
-    DATABASE_URL: str = "sqlite+aiosqlite:///./stockpilot_dev.db"
+    DATABASE_URL: str = "postgresql+asyncpg://stockpilot:stockpilot@localhost:5432/stockpilot_dev"
 
     # ── Zerodha Kite Connect ──────────────────────────────────────────────────
     KITE_API_KEY: str = ""

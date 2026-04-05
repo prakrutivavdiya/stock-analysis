@@ -106,8 +106,9 @@ _MARKET_CLOSE_MINUTES_UTC = 600
 
 
 def _market_is_open() -> bool:
+    from backend.holidays import is_exchange_holiday
     now = datetime.now(timezone.utc)
-    if now.weekday() >= 5:  # Sat/Sun
+    if now.weekday() >= 5 or is_exchange_holiday(now.date()):
         return False
     t = now.hour * 60 + now.minute
     return _MARKET_OPEN_MINUTES_UTC <= t < _MARKET_CLOSE_MINUTES_UTC

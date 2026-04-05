@@ -291,7 +291,7 @@ async def get_historical(
 
     return HistoricalResponse(
         instrument_token=instrument_token,
-        tradingsymbol=cached[0].tradingsymbol if cached else (tradingsymbol or str(instrument_token)),
+        tradingsymbol=symbol,
         interval=interval,
         from_date=from_d.isoformat(),
         to_date=to_d.isoformat(),

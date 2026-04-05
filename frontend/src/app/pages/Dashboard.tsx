@@ -111,6 +111,7 @@ export default function Dashboard() {
 
   // Load column definitions + user preferences together so defaults from DB
   // are used when the user has no saved prefs (source of truth is always DB).
+  const prefsLoadedFromBackend = useRef(false);
   useEffect(() => {
     Promise.all([getColumns(), getPreferences()])
       .then(([{ columns }, { preferences: p }]) => {
@@ -129,40 +130,24 @@ export default function Dashboard() {
         if (p.visible_user_kpi_columns && p.visible_user_kpi_columns.length > 0) {
           setVisibleUserKpis(p.visible_user_kpi_columns);
         }
+        // Mark load complete — enables the save effect below
+        prefsLoadedFromBackend.current = true;
       })
       .catch(() => { /* offline — keep localStorage values */ });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // PD-09: Persist column visibility to localStorage + backend after every change (skip first mount)
-  const colsInitialized = useRef(false);
+  // PD-09: Persist all preferences together in one effect so nothing gets erased.
+  // Only fires after the initial backend load to avoid overwriting with defaults.
   useEffect(() => {
-    if (!colsInitialized.current) { colsInitialized.current = true; return; }
+    if (!prefsLoadedFromBackend.current) return;
     visibleHoldingsColumns.set(visibleCols);
-    savePreferences({
-      visible_holdings_columns: visibleCols,
-      holdings_sort: { column: sortKey, direction: sortDir },
-    }).catch(() => {}); // best-effort — localStorage is the fallback
-  }, [visibleCols]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const sortInitialized = useRef(false);
-  useEffect(() => {
-    if (!sortInitialized.current) { sortInitialized.current = true; return; }
     holdingsSort.set({ column: sortKey, direction: sortDir });
-    savePreferences({
-      visible_holdings_columns: visibleCols,
-      holdings_sort: { column: sortKey, direction: sortDir },
-    }).catch(() => {}); // best-effort
-  }, [sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const kpiColsInitialized = useRef(false);
-  useEffect(() => {
-    if (!kpiColsInitialized.current) { kpiColsInitialized.current = true; return; }
     savePreferences({
       visible_holdings_columns: visibleCols,
       visible_user_kpi_columns: visibleUserKpis,
       holdings_sort: { column: sortKey, direction: sortDir },
     }).catch(() => {});
-  }, [visibleUserKpis]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visibleCols, visibleUserKpis, sortKey, sortDir]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [colFilters, setColFilters] = useState<Record<string, string>>({});
   const [filterPopover, setFilterPopover] = useState<string | null>(null);
@@ -853,7 +838,7 @@ export default function Dashboard() {
                   const val = (holding.kpis as Record<string, unknown> | undefined)?.[name];
                   const displayVal = val == null ? "—"
                     : typeof val === "boolean" ? (
-                        <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${val ? "bg-red-900/30 text-red-400" : "bg-[#2a2a2a] text-muted-foreground"}`}>
+                        <span className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${val ? "bg-green-900/30 text-green-400" : "bg-red-900/30 text-red-400"}`}>
                           {val ? "true" : "false"}
                         </span>
                       )

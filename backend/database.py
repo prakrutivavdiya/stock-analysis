@@ -1,15 +1,11 @@
 """
 Async SQLAlchemy engine and session factory.
 
-Usage:
-  Production  — set DATABASE_URL to a PostgreSQL async URL:
-                  postgresql+asyncpg://user:pass@host:5432/stockpilot
+DATABASE_URL must be a PostgreSQL async URL:
+  postgresql+asyncpg://user:pass@host:5432/stockpilot
 
-  Development — set DATABASE_URL to a SQLite async URL:
-                  sqlite+aiosqlite:///./stockpilot_dev.db
-                  (create the file first; aiosqlite handles the rest)
-
-Environment variable: DATABASE_URL  (required at runtime)
+Set via environment variable or backend/.env.local.
+Run `alembic upgrade head` before first boot to create all tables.
 """
 
 from typing import AsyncGenerator
@@ -29,23 +25,20 @@ from backend.config import settings
 
 DATABASE_URL: str = settings.DATABASE_URL
 
-# pool_size and max_overflow are PostgreSQL/asyncpg-only; aiosqlite uses a
-# single-file lock and rejects these kwargs entirely.
-_is_sqlite = settings.DATABASE_URL.startswith("sqlite")
-_engine_kwargs: dict = {
-    "echo": False,          # set to True to log all SQL statements
-    "pool_pre_ping": True,  # verify connections before use (handles stale connections)
-}
-if not _is_sqlite:
-    _engine_kwargs["pool_size"] = 10
-    _engine_kwargs["max_overflow"] = 20
-
-engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
+# pool_pre_ping=False: asyncpg handles stale connections natively via its own
+# keepalive mechanism; enabling it triggers MissingGreenlet errors.
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=False,
+    pool_size=10,
+    max_overflow=20,
+)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
-    expire_on_commit=False,  # keep attributes accessible after commit
+    expire_on_commit=False,
     autoflush=False,
     autocommit=False,
 )
@@ -80,19 +73,3 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
-
-
-# ---------------------------------------------------------------------------
-# Schema initialisation helper (dev / testing only)
-# ---------------------------------------------------------------------------
-
-
-async def create_all_tables() -> None:
-    """
-    Create all tables that do not already exist.
-    Use Alembic migrations in production; this is for dev / testing only.
-    """
-    from backend import models  # noqa: F401 — ensure models are registered
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

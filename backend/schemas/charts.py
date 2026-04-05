@@ -35,6 +35,20 @@ class DrawingsResponse(BaseModel):
     drawings: list[DrawingOut]
 
 
+class CandleIn(BaseModel):
+    timestamp: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+
+
+class ComputeRequest(BaseModel):
+    indicators: list[str]
+    candles: list[CandleIn]
+
+
 class IndicatorPoint(BaseModel):
     timestamp: datetime
     value: float | None = None

@@ -120,6 +120,17 @@ interface CandleCache {
   candles: CandleData[];
 }
 
+/** Remove duplicate calendar-day candles after a merge+sort, keeping the first occurrence. */
+function dedupCandles(sorted: CandleData[]): CandleData[] {
+  const seen = new Set<string>();
+  return sorted.filter(c => {
+    const k = c.timestamp.slice(0, 10);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
 export function getDateRange(backend: string, interval?: string): { from: string; to: string } {
   const now = new Date();
   const to  = now.toISOString().slice(0, 10);
@@ -268,6 +279,13 @@ export default function Charts() {
   // Reset chart confirm state (two-click pattern)
   const [resetConfirm, setResetConfirm] = useState(false);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // CH-08-RIGHTCLICK: right-click context menu
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; price: number } | null>(null);
+  const contextMenuHandlerRef = useRef<((e: MouseEvent) => void) | null>(null);
+  const isFetchingMoreRef    = useRef(false);
+  const hasMoreHistoryRef    = useRef(true);
+  const indicatorSeriesRef   = useRef<ReturnType<IChartApi["addSeries"]>[]>([]);
   // Keep refs in sync with state
   useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
   useEffect(() => { trendlineAnchorRef.current = trendlineAnchor; }, [trendlineAnchor]);
@@ -495,6 +513,8 @@ export default function Charts() {
     async function load() {
       setLoading(true);
       setError(null);
+      hasMoreHistoryRef.current  = true;
+      isFetchingMoreRef.current  = false;
       try {
         // ── 1. Candles (from local cache if symbol/exchange/interval match) ──
         let token: number;
@@ -534,6 +554,29 @@ export default function Charts() {
           else if (interval === "W")   candles = aggregateToWeekly(candles);
           else if (interval === "M")   candles = aggregateToMonthly(candles);
           candleCacheRef.current = { symbol, exchange, interval, token, from, to, candles };
+
+          // Merge any persisted older candles from localStorage
+          if (!isIntraday) {
+            try {
+              const stored = localStorage.getItem(`candle_hist_${token}_${interval}`);
+              if (stored) {
+                const hist = JSON.parse(stored) as { from: string; candles: CandleData[] };
+                if (hist.from < from) {
+                  // Use date-string comparison (avoids IST/UTC boundary dup at exactly `from`)
+                  const older = hist.candles.filter(c => c.timestamp.slice(0, 10) < from);
+                  if (older.length > 0) {
+                    candles = dedupCandles(
+                      [...older, ...candles].sort(
+                        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+                      )
+                    );
+                    from = hist.from;
+                    candleCacheRef.current = { symbol, exchange, interval, token, from, to, candles };
+                  }
+                }
+              }
+            } catch { /* ignore corrupt cache */ }
+          }
         }
 
         if (cancelled || !containerRef.current) return;
@@ -558,6 +601,68 @@ export default function Charts() {
         });
         chartRef.current = chart;
 
+        // ── Lazy-load older candles when user scrolls past left edge ──────
+        async function fetchOlderCandles(visibleBars: number) {
+          const cache = candleCacheRef.current;
+          if (!cache || isFetchingMoreRef.current || !hasMoreHistoryRef.current || isIntraday) return;
+          isFetchingMoreRef.current = true;
+          const persistKey = `candle_hist_${cache.token}_${interval}`;
+          try {
+            // toDate = day before our earliest cached candle
+            const toDate = new Date(cache.from);
+            toDate.setDate(toDate.getDate() - 1);
+            // fromDate: translate visible bars → calendar days so we fetch exactly what fits on screen
+            const barsToFetch = Math.max(visibleBars, 50);
+            const fromDate = new Date(toDate);
+            if      (interval === "M") fromDate.setMonth(fromDate.getMonth() - barsToFetch);
+            else if (interval === "W") fromDate.setDate(fromDate.getDate() - barsToFetch * 7);
+            else                        fromDate.setDate(fromDate.getDate() - Math.ceil(barsToFetch * 1.5));
+            const newFrom = fromDate.toISOString().slice(0, 10);
+            const newTo   = toDate.toISOString().slice(0, 10);
+            const qs = new URLSearchParams({
+              interval: backendInterval, from_date: newFrom, to_date: newTo,
+              tradingsymbol: cache.symbol, exchange: cache.exchange,
+            });
+            const res = await apiFetch<{ candles: CandleData[] }>(`/historical/${cache.token}?${qs}`);
+            if (cancelled || !res.candles?.length) { hasMoreHistoryRef.current = false; return; }
+            let older = res.candles;
+            if      (interval === "120") older = aggregateToNMinutes(older, 120);
+            else if (interval === "240") older = aggregateToNMinutes(older, 240);
+            else if (interval === "W")   older = aggregateToWeekly(older);
+            else if (interval === "M")   older = aggregateToMonthly(older);
+            const allCandles = dedupCandles(
+              [...older, ...cache.candles].sort(
+                (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+              )
+            );
+            cache.from    = newFrom;
+            cache.candles = allCandles;
+            // Persist for future visits — historical data is immutable so safe to cache
+            try {
+              localStorage.setItem(persistKey, JSON.stringify({ from: newFrom, candles: allCandles }));
+            } catch { /* quota exceeded — skip persist */ }
+            if (!seriesRef.current || !chartRef.current) return;
+            const ohlc = allCandles.map((c) => ({
+              time: toTime(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close,
+            }));
+            seriesRef.current.setData(
+              chartType === "candle" || chartType === "bar"
+                ? ohlc
+                : ohlc.map((c) => ({ time: c.time, value: c.close })),
+            );
+            // Re-compute indicators over the full extended date range
+            await renderIndicators(cache.from, cache.to, allCandles);
+          } catch { /* silent — keep existing data */ }
+          finally  { isFetchingMoreRef.current = false; }
+        }
+
+        const onVisibleRangeChange = () => {
+          if (isIntraday || !hasMoreHistoryRef.current) return;
+          const range = chart.timeScale().getVisibleLogicalRange();
+          if (range && range.from < 10) fetchOlderCandles(Math.ceil(range.to - range.from));
+        };
+        chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+
         // ── 3. Price series ───────────────────────────────────────────────
         const sorted   = [...candles].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         const ohlcData = sorted.map((c) => ({ time: toTime(c.timestamp), open: c.open, high: c.high, low: c.low, close: c.close }));
@@ -573,13 +678,20 @@ export default function Charts() {
         tokenRef.current  = token;
 
         // ── 4. Indicators ─────────────────────────────────────────────────
-        if (activeIndicators.length > 0) {
+        // Extracted into renderIndicators so it can be re-called after lazy-loading older candles.
+        async function renderIndicators(indFrom: string, indTo: string, sortedCandles: CandleData[]) {
+          if (!activeIndicators.length || !chartRef.current) return;
+          // Remove stale indicator series (cleans up their panes automatically)
+          for (const s of indicatorSeriesRef.current) {
+            try { chartRef.current.removeSeries(s); } catch { /* already removed */ }
+          }
+          indicatorSeriesRef.current = [];
           try {
-            // VOLUME is computed client-side from candle data — exclude from backend request
+            const ic = chartRef.current;
             const backendIndicators = activeIndicators.filter((i) => i !== "VOLUME");
             const qs2 = new URLSearchParams({
-              instrument_token: String(token),
-              interval: backendInterval, from_date: from, to_date: to,
+              instrument_token: String(tokenRef.current!),
+              interval: backendInterval, from_date: indFrom, to_date: indTo,
               indicators: backendIndicators.join(","),
               tradingsymbol: symbol,
               exchange: exchange,
@@ -592,9 +704,13 @@ export default function Charts() {
 
             let oscPane = 1;
 
+            // Track each new series so we can remove it on the next call
+            const track = (s: ReturnType<IChartApi["addSeries"]>) => {
+              indicatorSeriesRef.current.push(s);
+              return s;
+            };
             const addLine = (data: { time: UTCTimestamp; value: number }[], color: string, pane = 0, opts: Record<string, unknown> = {}) =>
-              chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: pane === 0, ...opts } as Parameters<typeof chart.addSeries>[1], pane).setData(data);
-
+              track(ic.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: pane === 0, ...opts } as Parameters<typeof ic.addSeries>[1], pane)).setData(data);
             const valueList = (rows: Row[], f = "value") =>
               (rows ?? []).filter((r) => r[f] != null).map((r) => ({ time: toTime(r.timestamp as string), value: r[f] as number }));
 
@@ -610,9 +726,9 @@ export default function Charts() {
 
               } else if (["BB", "KC", "DC"].includes(name)) {
                 const baseOpts = { lineWidth: 1 as const, priceLineVisible: false, lastValueVisible: false };
-                chart.addSeries(LineSeries, { ...baseOpts, color }, 0).setData(valueList(rows, "upper"));
-                chart.addSeries(LineSeries, { ...baseOpts, color, lineStyle: LineStyle.Dashed }, 0).setData(valueList(rows, "middle"));
-                chart.addSeries(LineSeries, { ...baseOpts, color }, 0).setData(valueList(rows, "lower"));
+                track(ic.addSeries(LineSeries, { ...baseOpts, color }, 0)).setData(valueList(rows, "upper"));
+                track(ic.addSeries(LineSeries, { ...baseOpts, color, lineStyle: LineStyle.Dashed }, 0)).setData(valueList(rows, "middle"));
+                track(ic.addSeries(LineSeries, { ...baseOpts, color }, 0)).setData(valueList(rows, "lower"));
 
               } else if (name === "SUPERTREND") {
                 type STRow = { timestamp: string; value: number | null; direction: number | null };
@@ -628,8 +744,8 @@ export default function Charts() {
                 const dotOpts = { lineWidth: 1 as const, lineStyle: LineStyle.SparseDotted, priceLineVisible: false, lastValueVisible: false };
                 const longPts  = pRows.filter((r) => r.long  != null).map((r) => ({ time: toTime(r.timestamp), value: r.long!  }));
                 const shortPts = pRows.filter((r) => r.short != null).map((r) => ({ time: toTime(r.timestamp), value: r.short! }));
-                if (longPts.length)  chart.addSeries(LineSeries, { ...dotOpts, color: "#22c55e" }, 0).setData(longPts);
-                if (shortPts.length) chart.addSeries(LineSeries, { ...dotOpts, color: "#ef4444" }, 0).setData(shortPts);
+                if (longPts.length)  track(ic.addSeries(LineSeries, { ...dotOpts, color: "#22c55e" }, 0)).setData(longPts);
+                if (shortPts.length) track(ic.addSeries(LineSeries, { ...dotOpts, color: "#ef4444" }, 0)).setData(shortPts);
 
               // ── Trend oscillators ────────────────────────────────────────
               } else if (name === "ADX") {
@@ -646,14 +762,14 @@ export default function Charts() {
               // ── Momentum oscillators ─────────────────────────────────────
               } else if (name === "RSI") {
                 const pane = oscPane++;
-                const s = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane);
+                const s = track(ic.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane));
                 s.setData(valueList(rows));
                 s.createPriceLine({ price: 70, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "OB" });
                 s.createPriceLine({ price: 30, color: "#22c55e", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "OS" });
 
               } else if (name === "STOCH" || name === "STOCHRSI") {
                 const pane = oscPane++;
-                const s = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane);
+                const s = track(ic.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane));
                 s.setData(valueList(rows, "k"));
                 addLine(valueList(rows, "d"), "#f59e0b", pane);
                 s.createPriceLine({ price: 80, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false, title: "" });
@@ -666,31 +782,31 @@ export default function Charts() {
                 const pane   = oscPane++;
                 addLine(valid.map((r) => ({ time: toTime(r.timestamp), value: r.macd!   })), "#3b82f6", pane);
                 addLine(valid.map((r) => ({ time: toTime(r.timestamp), value: r.signal! })), "#f59e0b", pane);
-                chart.addSeries(HistogramSeries, { priceLineVisible: false, lastValueVisible: false }, pane)
+                track(ic.addSeries(HistogramSeries, { priceLineVisible: false, lastValueVisible: false }, pane))
                   .setData(valid.map((r) => ({ time: toTime(r.timestamp), value: r.histogram!, color: (r.histogram ?? 0) >= 0 ? "rgba(34,197,94,0.6)" : "rgba(239,68,68,0.6)" })));
 
               } else if (name === "CCI") {
                 const pane = oscPane++;
-                const s = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane);
+                const s = track(ic.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane));
                 s.setData(valueList(rows));
                 s.createPriceLine({ price:  100, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "+100" });
                 s.createPriceLine({ price: -100, color: "#22c55e", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "-100" });
 
               } else if (name === "WILLR") {
                 const pane = oscPane++;
-                const s = chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane);
+                const s = track(ic.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false }, pane));
                 s.setData(valueList(rows));
                 s.createPriceLine({ price: -20, color: "#ef4444", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "-20" });
                 s.createPriceLine({ price: -80, color: "#22c55e", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: "-80" });
 
               // ── Volume histogram (client-side, no backend call needed) ───
               } else if (name === "VOLUME") {
-                const volData = sorted.map((c) => ({ time: toTime(c.timestamp), value: c.volume ?? 0 }));
-                chart.addSeries(HistogramSeries, {
+                const volData = sortedCandles.map((c) => ({ time: toTime(c.timestamp), value: c.volume ?? 0 }));
+                track(ic.addSeries(HistogramSeries, {
                   color: "#64748b",
                   priceFormat: { type: "volume" },
                   priceScaleId: "vol",
-                } as Parameters<typeof chart.addSeries>[1], oscPane++).setData(volData);
+                } as Parameters<typeof ic.addSeries>[1], oscPane++)).setData(volData);
 
               // ── Generic single-line oscillator ───────────────────────────
               } else {
@@ -701,6 +817,7 @@ export default function Charts() {
             // Non-fatal — price chart still renders
           }
         }
+        await renderIndicators(from, to, sorted);
 
         chart.timeScale().fitContent();
 
@@ -740,6 +857,20 @@ export default function Charts() {
           }
         });
 
+        // ── CH-08-RIGHTCLICK: right-click context menu ────────────────────
+        const cmHandler = (e: MouseEvent) => {
+          e.preventDefault();
+          // Don't show menu while a drawing tool is active
+          if (drawingModeRef.current !== "none") return;
+          if (!containerRef.current) return;
+          const rect = containerRef.current.getBoundingClientRect();
+          const price = seriesRef.current?.coordinateToPrice(e.clientY - rect.top);
+          if (price == null || price <= 0) return;
+          setContextMenu({ x: e.clientX, y: e.clientY, price });
+        };
+        contextMenuHandlerRef.current = cmHandler;
+        container.addEventListener("contextmenu", cmHandler);
+
         // ── Resize observer ───────────────────────────────────────────────
         const ro = new ResizeObserver(() => {
           if (containerRef.current && chartRef.current)
@@ -758,6 +889,9 @@ export default function Charts() {
     load();
     return () => {
       cancelled = true;
+      if (containerRef.current && contextMenuHandlerRef.current) {
+        containerRef.current.removeEventListener("contextmenu", contextMenuHandlerRef.current);
+      }
       chartRef.current?.remove();  chartRef.current = null;
       roRef.current?.disconnect(); roRef.current    = null;
       drawingObjectsRef.current.clear();
@@ -792,6 +926,24 @@ export default function Charts() {
       }
     });
   }, [interval]);
+
+  // ── Close context menu on outside click or Escape ─────────────────────────
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === "Escape") setContextMenu(null);
+      } else {
+        setContextMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handler as EventListener);
+    document.addEventListener("keydown", handler as EventListener);
+    return () => {
+      document.removeEventListener("mousedown", handler as EventListener);
+      document.removeEventListener("keydown", handler as EventListener);
+    };
+  }, [contextMenu]);
 
   // ── Filtered indicator list for panel ─────────────────────────────────────
   const filteredCatalog = indicatorSearch
@@ -1103,6 +1255,38 @@ export default function Charts() {
             </div>
           )}
           <div ref={containerRef} className="w-full h-full" />
+
+          {/* CH-08-RIGHTCLICK: context menu */}
+          {contextMenu && (
+            <div
+              className="fixed z-[100] bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg shadow-xl overflow-hidden min-w-[160px]"
+              style={{ top: contextMenu.y, left: contextMenu.x }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <button
+                className="w-full text-left px-4 py-2.5 text-sm hover:bg-[#2a2a2a] text-green-400 transition-colors"
+                onClick={() => {
+                  navigate(
+                    `/orders?symbol=${symbol}&exchange=${exchange}&txType=BUY&price=${contextMenu.price.toFixed(2)}&orderType=LIMIT`
+                  );
+                  setContextMenu(null);
+                }}
+              >
+                Buy at ₹{contextMenu.price.toFixed(2)}
+              </button>
+              <button
+                className="w-full text-left px-4 py-2.5 text-sm hover:bg-[#2a2a2a] text-red-400 border-t border-[#2a2a2a] transition-colors"
+                onClick={() => {
+                  navigate(
+                    `/orders?symbol=${symbol}&exchange=${exchange}&txType=SELL&price=${contextMenu.price.toFixed(2)}&orderType=LIMIT`
+                  );
+                  setContextMenu(null);
+                }}
+              >
+                Sell at ₹{contextMenu.price.toFixed(2)}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

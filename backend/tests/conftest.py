@@ -1,9 +1,9 @@
 """
 Shared test fixtures for StockPilot backend.
 
-Test database  : SQLite in-memory via aiosqlite (isolated per test function).
+Test database  : PostgreSQL stockpilot_test via asyncpg (isolated per test function).
 Auth / Kite    : FastAPI dependency overrides — no real tokens or Kite calls.
-App lifespan   : startup hooks (create_all_tables, _load_instruments, scheduler)
+App lifespan   : startup hooks (_load_instruments, scheduler)
                  are patched so tests run in isolation without side-effects.
 """
 from __future__ import annotations
@@ -18,6 +18,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from backend.config import settings
 from backend.database import Base, get_db
@@ -48,16 +49,16 @@ def reset_rate_limits() -> None:
     yield
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Database fixtures — fresh in-memory SQLite per test
+# Database fixtures — fresh PostgreSQL schema per test (drop_all / create_all)
 # ─────────────────────────────────────────────────────────────────────────────
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+TEST_DATABASE_URL = "postgresql+asyncpg://stockpilot:stockpilot@localhost:5432/stockpilot_test"
 
 
 @pytest_asyncio.fixture
 async def db_engine():
-    """Create all tables in a fresh in-memory SQLite database."""
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    """Create all tables in the PostgreSQL test database, drop them after."""
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
@@ -124,22 +125,27 @@ async def client(
     Yield an httpx AsyncClient wired to the FastAPI app.
 
     Overrides:
-      - get_db          → test SQLite session
+      - get_db          → test PostgreSQL session
       - get_current_user → mock_user (bypasses JWT validation)
       - get_kite_client  → mock_kite  (no real Kite API calls)
 
-    App lifespan hooks (create_all_tables, _load_instruments, scheduler) are
-    patched to prevent them from touching real resources.
+    App lifespan hooks (_load_instruments, scheduler) are patched to prevent
+    them from touching real resources.
+
+    The mock user is seeded into the database so FK constraints on audit_logs,
+    watchlists, and other user-owned tables are satisfied.
     """
+    # Seed the user row so FK constraints are satisfied for all tests
+    await seed_user(db_session)
+
     async def _override_get_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
-    app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_db] = _override_get_db  # type: ignore[assignment]
     app.dependency_overrides[get_current_user] = lambda: mock_user
     app.dependency_overrides[get_kite_client] = lambda: mock_kite
 
     with ExitStack() as stack:
-        stack.enter_context(patch("backend.main.create_all_tables", new_callable=AsyncMock))
         stack.enter_context(patch("backend.main.start_scheduler", new_callable=AsyncMock))
         stack.enter_context(patch("backend.main.shutdown_scheduler", new_callable=AsyncMock))
         stack.enter_context(
@@ -160,7 +166,11 @@ async def client(
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def seed_user(db: AsyncSession) -> User:
-    """Insert a real User row so foreign-key relationships work."""
+    """Insert a real User row so foreign-key relationships work. Idempotent."""
+    from sqlalchemy import select
+    existing = (await db.execute(select(User).where(User.id == USER_ID))).scalar_one_or_none()
+    if existing:
+        return existing
     user = User(
         id=USER_ID,
         kite_user_id="ZX1234",
@@ -170,6 +180,33 @@ async def seed_user(db: AsyncSession) -> User:
         kite_token_expires_at=datetime.now(timezone.utc) + timedelta(hours=8),
         exchange_memberships=["NSE", "BSE"],
         product_types=["CNC", "MIS", "NRML"],
+        paper_trade_mode=False,
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+OTHER_USER_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
+
+async def seed_other_user(db: AsyncSession) -> User:
+    """Insert a second User row (OTHER_USER_ID) for auth-isolation tests. Idempotent."""
+    from sqlalchemy import select
+    existing = (await db.execute(select(User).where(User.id == OTHER_USER_ID))).scalar_one_or_none()
+    if existing:
+        return existing
+    user = User(
+        id=OTHER_USER_ID,
+        kite_user_id="ZX9999",
+        username="Other User",
+        email="other@example.com",
+        kite_access_token_enc="enc_other",
+        kite_token_expires_at=datetime.now(timezone.utc) + timedelta(hours=8),
+        exchange_memberships=["NSE"],
+        product_types=["CNC"],
         paper_trade_mode=False,
         is_active=True,
     )

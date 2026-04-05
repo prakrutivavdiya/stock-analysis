@@ -575,9 +575,9 @@ If `users.paper_trade_mode = true`, the order is **not** forwarded to Kite. It i
 ```json
 {
   "tradingsymbol": "INFY",
-  "exchange": "BSE",
+  "exchange": "NSE",
   "transaction_type": "BUY",
-  "product": "CNC",
+  "product": "MIS",
   "order_type": "LIMIT",
   "quantity": 5,
   "price": 1280.0,
@@ -588,14 +588,87 @@ If `users.paper_trade_mode = true`, the order is **not** forwarded to Kite. It i
 }
 ```
 
+`variety`: `"regular"` | `"co"` | `"amo"` | `"iceberg"` | `"auction"` | `"bo"`. Default `"regular"`.
 `trigger_price`: required for `SL` and `SL-M` order types; `null` otherwise.
 `paper_trade`: optional boolean override (default: reflects `users.paper_trade_mode`). When `true`, order is simulated regardless of account setting.
+
+**Bracket orders (`variety="bo"`):**
+
+Bracket orders wrap a LIMIT entry with an auto-target and auto-stop-loss. Kite restrictions:
+- `exchange`: NSE or BSE equity only
+- `product`: must be `MIS` (intraday; no overnight bracket)
+- `order_type`: must be `LIMIT`
+- Only available during market hours (09:15–15:30 IST); no AMO fallback
+
+Extra required fields:
+```json
+{
+  "variety": "bo",
+  "product": "MIS",
+  "order_type": "LIMIT",
+  "squareoff": 10.0,
+  "stoploss": 5.0,
+  "trailing_stoploss": 2.0
+}
+```
+
+`squareoff`: points above entry (for BUY) or below entry (for SELL) at which the position auto-squares off with profit. Must be > 0.
+`stoploss`: points against entry at which the stop-loss fires. Must be > 0.
+`trailing_stoploss`: optional trailing stop-loss in points. As price moves in your favor, the stop trails by this amount.
+
+Returns `422` if `squareoff`/`stoploss` are missing, or if `product != MIS`.
 
 **Response:** `201`
 ```json
 { "order_id": "241225000000001", "audit_log_id": "uuid", "paper_trade": false }
 ```
-Errors: `422` for Kite rejection with full Kite error message.
+Errors: `422` for validation failures or Kite rejection with full Kite error message.
+
+---
+
+### `POST /orders/margins`
+Pre-order SPAN + exposure margin calculation. Returns the margin required for a basket of orders before placing them. Best-effort: returns `200` with zero values if Kite margin API is unavailable.
+
+**Request:**
+```json
+{
+  "orders": [
+    {
+      "exchange": "NSE",
+      "tradingsymbol": "INFY",
+      "transaction_type": "BUY",
+      "variety": "regular",
+      "product": "MIS",
+      "order_type": "LIMIT",
+      "quantity": 10,
+      "price": 1280.0,
+      "trigger_price": 0
+    }
+  ]
+}
+```
+
+**Response:** `200`
+```json
+{
+  "equity": {
+    "span": 0,
+    "exposure": 1280.0,
+    "option_premium": 0,
+    "additional": 0,
+    "bo": 0,
+    "cash": 0,
+    "var": 128.0,
+    "total": 1408.0
+  },
+  "commodity": {
+    "span": 0, "exposure": 0, "option_premium": 0, "additional": 0,
+    "bo": 0, "cash": 0, "var": 0, "total": 0
+  }
+}
+```
+
+Rate limit: same as `POST /orders` (20 req/min per user).
 
 ---
 

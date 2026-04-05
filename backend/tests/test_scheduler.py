@@ -62,13 +62,14 @@ def fresh_scheduler():
 
 
 @pytest.mark.asyncio
-async def test_start_scheduler_registers_three_jobs(fresh_scheduler):
-    """start_scheduler() registers reload_instruments, fetch_d1_ohlcv, refresh_fundamentals."""
+async def test_start_scheduler_registers_four_jobs(fresh_scheduler):
+    """start_scheduler() registers all four scheduled jobs."""
     await scheduler_module.start_scheduler()
 
     job_ids = [job.id for job in fresh_scheduler.get_jobs()]
     assert "reload_instruments" in job_ids
     assert "fetch_d1_ohlcv" in job_ids
+    assert "recompute_kpis" in job_ids
     assert "refresh_fundamentals" in job_ids
 
 

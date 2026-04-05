@@ -26,6 +26,10 @@ from backend.schemas.orders import (
     ModifyOrderRequest,
     ModifyOrderResponse,
     OrderHistoryResponse,
+    OrderMarginItem,
+    OrderMarginsRequest,
+    OrderMarginsResponse,
+    OrderMarginResult,
     OrderOut,
     OrdersResponse,
     PlaceOrderRequest,
@@ -124,6 +128,23 @@ async def place_order(
             if body.validity_ttl and body.validity == "TTL":
                 kite_kwargs["validity_ttl"] = body.validity_ttl
 
+            # Bracket order (variety="bo") validation and extra params
+            if body.variety == "bo":
+                if body.squareoff is None or body.stoploss is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="squareoff and stoploss are required for bracket orders (variety='bo')",
+                    )
+                if body.product != "MIS":
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Bracket orders require product='MIS'",
+                    )
+                kite_kwargs["squareoff"] = body.squareoff
+                kite_kwargs["stoploss"] = body.stoploss
+                if body.trailing_stoploss:
+                    kite_kwargs["trailing_stoploss"] = body.trailing_stoploss
+
             raw_id = await asyncio.to_thread(kite.place_order, **kite_kwargs)
             kite_order_id = str(raw_id)
         except Exception as exc:
@@ -181,6 +202,42 @@ async def place_order(
         audit_log_id=str(audit.id),
         paper_trade=is_paper,
     )
+
+
+@router.post("/margins", response_model=OrderMarginsResponse)
+async def order_margins(
+    body: OrderMarginsRequest,
+    _user: CurrentUser,
+    kite: KiteClient,
+) -> OrderMarginsResponse:
+    """
+    Fetch SPAN + exposure margin required for the given order(s) via Kite.
+
+    Called by the frontend before showing the order confirmation dialog so the
+    user can see the actual margin that will be blocked (KITE-MARGIN-REQ).
+    Non-fatal if Kite returns an error — frontend falls back to showing charges only.
+    """
+    params = [o.model_dump() for o in body.orders]
+    try:
+        result = await asyncio.to_thread(kite.order_margins, params)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Kite margin API error: {exc}") from exc
+
+    def _parse(seg: dict) -> OrderMarginResult:
+        return OrderMarginResult(
+            span=float(seg.get("span", 0) or 0),
+            exposure=float(seg.get("exposure", 0) or 0),
+            option_premium=float(seg.get("option_premium", 0) or 0),
+            additional=float(seg.get("additional", 0) or 0),
+            bo=float(seg.get("bo", 0) or 0),
+            cash=float(seg.get("cash", 0) or 0),
+            var=float(seg.get("var", 0) or 0),
+            total=float(seg.get("total", 0) or 0),
+        )
+
+    equity = _parse(result.get("equity", {}) if isinstance(result, dict) else {})
+    commodity = _parse(result.get("commodity", {}) if isinstance(result, dict) else {})
+    return OrderMarginsResponse(equity=equity, commodity=commodity)
 
 
 @router.put("/{order_id}", response_model=ModifyOrderResponse)

@@ -19,7 +19,7 @@ from sqlalchemy import and_, select
 
 from backend.deps import CurrentUser, DBSession, KiteClient
 from backend.models import ChartDrawing, OHLCVCache
-from backend.schemas.charts import DrawingCreate, DrawingOut, DrawingsResponse, DrawingUpdate, IndicatorsResponse
+from backend.schemas.charts import ComputeRequest, DrawingCreate, DrawingOut, DrawingsResponse, DrawingUpdate, IndicatorsResponse
 
 router = APIRouter()
 

@@ -19,7 +19,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from backend.config import settings
-from backend.database import create_all_tables
+
 from backend.limiter import limiter
 from backend.routers import (
     audit,
@@ -71,16 +71,38 @@ def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRespons
 async def lifespan(app: FastAPI):
     log.info("StockPilot backend starting up…")
 
-    # Create tables (dev only; use Alembic in production)
-    await create_all_tables()
-    log.info("Database tables verified")
-
     # Pre-load Kite instruments into memory
     from backend.routers.instruments import _load_instruments
     await _load_instruments()
 
     # Start APScheduler
     await start_scheduler()
+
+    # Load NSE holiday calendar from Kite (falls back to static 2026 list on failure)
+    from backend.holidays import load_holidays_from_kite as _load_holidays
+    try:
+        from kiteconnect import KiteConnect as _KiteConnect2
+        from backend.models import User as _User2
+        from backend.crypto import decrypt_token as _decrypt2
+        from datetime import datetime as _dt2
+        async with __import__("backend.database", fromlist=["AsyncSessionLocal"]).AsyncSessionLocal() as _db2:
+            _now2 = _dt2.utcnow()
+            _huser = (await _db2.execute(
+                __import__("sqlalchemy", fromlist=["select"]).select(_User2).where(
+                    _User2.is_active == True,  # noqa: E712
+                    _User2.kite_token_expires_at > _now2,
+                ).limit(1)
+            )).scalar_one_or_none()
+            if _huser:
+                _htoken = _decrypt2(_huser.kite_access_token_enc, settings.KITE_ENCRYPTION_KEY)
+                _hkc = _KiteConnect2(api_key=settings.KITE_API_KEY)
+                _hkc.set_access_token(_htoken)
+                import asyncio as _asyncio2
+                await _asyncio2.to_thread(_load_holidays, _hkc)
+            else:
+                log.info("Holidays: no active Kite session — using static 2026 holiday list")
+    except Exception as _hexc:
+        log.warning("Holidays: startup load failed (%s) — using static 2026 list", _hexc)
 
     # Start KiteTicker for live market data
     try:

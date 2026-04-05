@@ -154,7 +154,7 @@ export interface ApiOrder {
   transaction_type: "BUY" | "SELL";
   product: string;
   order_type: "MARKET" | "LIMIT" | "SL" | "SL-M";
-  variety: "regular" | "co" | "amo" | "iceberg" | "auction";
+  variety: "regular" | "co" | "amo" | "iceberg" | "auction" | "bo";
   quantity: number;
   price: number;
   trigger_price: number | null;
@@ -183,6 +183,38 @@ export interface PlaceOrderRequest {
   validity: "DAY" | "IOC" | "TTL";
   validity_ttl?: number;
   paper_trade?: boolean;
+  // Bracket order fields (variety="bo" only)
+  squareoff?: number;
+  stoploss?: number;
+  trailing_stoploss?: number;
+}
+
+export interface OrderMarginItem {
+  exchange: string;
+  tradingsymbol: string;
+  transaction_type: "BUY" | "SELL";
+  variety?: string;
+  product: string;
+  order_type: string;
+  quantity: number;
+  price?: number;
+  trigger_price?: number;
+}
+
+export interface OrderMarginResult {
+  span: number;
+  exposure: number;
+  option_premium: number;
+  additional: number;
+  bo: number;
+  cash: number;
+  var: number;
+  total: number;
+}
+
+export interface OrderMarginsResponse {
+  equity: OrderMarginResult;
+  commodity: OrderMarginResult;
 }
 
 export interface PlaceOrderResponse {

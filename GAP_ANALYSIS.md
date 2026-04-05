@@ -1,5 +1,5 @@
-# StockPilot — Gap Analysis
-> PRD v5.1 · USER_STORIES v5.0 · API_SPEC v6.0 · Updated 2026-03-16
+# StockPilot — Gap Analysis & Implementation Plan
+> PRD v5.1 · USER_STORIES v5.0 · API_SPEC v6.0 · Updated 2026-04-03
 
 ---
 
@@ -9,70 +9,82 @@
 |-------|--------|
 | Phase 1 — Test coverage (backend + frontend) | ✅ Closed |
 | Phase 2 — User-facing feature gaps | ✅ Closed |
-| Phase 3 — Kite parity + infra | 3 open (P2) |
-| New gaps identified this review | 6 open (2 P2 · 4 P3) |
+| Phase 3 — Kite parity + infra | ✅ Closed — DOCKER and ALEMBIC both implemented |
+
+All feature, Kite-parity, and infrastructure gaps are fully implemented.
 
 ---
 
-## P2 — High Impact
+## Recently Closed (2026-04-03)
 
-### Feature Gaps
+### DOCKER
+**PRD ref:** PRD §9
+**Status:** ✅ Fully implemented
 
-| ID | PRD Ref | Gap | Detail | File(s) |
-|----|---------|-----|--------|---------|
-| PD-09-SYNC | PD-09 | Column prefs not synced to backend | PRD PD-09 explicitly requires `visible_holdings_columns` and `holdings_sort` to be persisted via `GET/PUT /user/preferences` so they survive across devices/browsers. Backend endpoints exist (`routers/` preferences router confirmed) but frontend reads/writes these two fields to `localStorage` only via `localPrefs.*`. On a second device or fresh browser the user's column layout is lost. | `frontend/src/app/pages/Dashboard.tsx`, `frontend/src/app/data/localPrefs.ts` |
-| CH-06-SIDEBAR | CH-06 | Charts page has no instrument sidebar | PRD CH-06 requires a left sidebar listing the user's held instruments with a live search/filter box so the user can click to switch charts without leaving the page. Currently the Charts page has no such sidebar — the user must navigate away or use the topbar search. | `frontend/src/app/pages/Charts.tsx` |
-| CH-DRAWINGS | CH-03, CH-04 | Drawing tools not rendered on chart | Backend has full drawings CRUD (5 endpoints: GET/POST/PUT/DELETE per token+interval). PRD requires horizontal lines, trendlines, rectangles, and text annotations rendered via Lightweight Charts v5. The frontend Charts.tsx renders OHLCV + indicator series only — no drawing tool UI, no load/save of existing drawings from the API. | `frontend/src/app/pages/Charts.tsx` |
-| KITE-LOT-SIZE | TR-02 | No lot-size validation for F&O | Frontend allows any integer quantity. F&O instruments have a fixed `lot_size` (e.g. NIFTY = 25); Kite rejects orders where `qty % lot_size ≠ 0`. `InstrumentResult.lot_size` is now available via `selectedInstrument` state (added in instrument-search PR) — validation logic just needs to be added. | `frontend/src/app/pages/Orders.tsx` |
-| KITE-TICK-SIZE | TR-01 | Tick-size validation hardcoded to ₹0.05 | `tickSizeError` (Orders.tsx:376-391) checks price is a multiple of ₹0.05 for NSE/BSE equity — correct for most equities but wrong for F&O instruments (e.g. NIFTY tick is ₹0.05, Bank NIFTY tick is ₹0.05, but individual futures may differ). Should use `selectedInstrument.tick_size` (now available) instead of hardcoded constant. | `frontend/src/app/pages/Orders.tsx` |
-| KITE-MARGIN-REQ | TR-14, TR-15 | SPAN/exposure margin not fetched pre-order | Estimated brokerage charges are shown ✅. But the SPAN + exposure margin *required* for the specific trade (especially for F&O/MIS) is not fetched or displayed before the confirmation dialog. Kite provides `GET /margins/orders` for this. | `frontend/src/app/pages/Orders.tsx`, `backend/routers/orders.py` |
-| SCHED-KPI | PRD §6.1, §9 | No scheduled KPI recompute job | PRD §6.1 shows a 09:25 IST job: "Scheduled job recomputes all active KPIs for all users' holdings." PRD §9 lists "KPI recompute at market open" in APScheduler. The backend `scheduler.py` has 3 jobs (instruments reload Mon–Fri 08:30, D-1 OHLCV fetch Mon–Fri 09:20, fundamentals refresh Sun 08:00) — the KPI recompute job is missing. Dashboard KPI values are therefore only refreshed on-demand (user page load), not automatically at market open. | `backend/scheduler.py` |
+**What was created:**
+- `backend/Dockerfile` — `python:3.12-slim`; installs `requirements.txt`; entrypoint runs Alembic then uvicorn
+- `backend/entrypoint.sh` — runs `alembic upgrade head` then `uvicorn backend.main:app`
+- `frontend/Dockerfile` — two-stage: `node:20-alpine` Vite build → `nginx:alpine` static serve
+- `frontend/nginx.conf` — SPA fallback + `/api/` proxy → backend + `/ws/` WebSocket upgrade proxy
+- `.dockerignore` (root) — excludes `.venv`, `__pycache__`, `*.pyc`, `node_modules`, `dist`, `.git`, secrets
+- `frontend/.dockerignore` — excludes `node_modules`, `dist`, `.env*`
+- `docker-compose.yml` updated — added `backend` (depends_on postgres healthcheck) and `frontend` (depends_on backend) services on shared `app` network
+
+**Usage:** `docker compose up --build` — starts PostgreSQL, runs Alembic migrations, starts FastAPI on :8000, serves React on :80
+
+---
+
+### ALEMBIC
+**PRD ref:** PRD §9
+**Status:** ✅ Fully implemented — no action needed
+
+**What exists (production-ready):**
+- `backend/alembic.ini` — configured with `script_location = %(here)s/alembic`; DB URL sourced from `settings.DATABASE_URL` at runtime
+- `backend/alembic/env.py` — async-aware (`async_engine_from_config` + `asyncio.run()`); imports `Base` from `backend.models` and URL from `backend.config`
+- `backend/alembic/versions/0001_initial_schema.py` — comprehensive initial migration covering all 9 tables (users, refresh_tokens, audit_logs, ohlcv_cache, kpis, chart_drawings, fundamental_cache, watchlists, watchlist_items) with correct indexes, unique constraints, and `downgrade()`
+- `alembic>=1.13.0` in `requirements.txt`
+
+**Design decisions (correct):**
+- Migrations are **CLI-driven** (`alembic upgrade head`), not auto-run on app startup
+- `database.py` `create_all_tables()` is explicitly documented as "dev/testing only"
+- Tests use `Base.metadata.create_all/drop_all` directly (bypasses Alembic — correct for test isolation)
+
+**Usage:** `cd backend && alembic upgrade head` before first deploy or after new migration. Generate new: `alembic revision --autogenerate -m "description"`
 
 ---
 
-## P3 — Nice-to-Have
+## Recently Closed (2026-04-03)
 
-| ID | PRD Ref | Gap | Detail |
-|----|---------|-----|--------|
-| CH-08-RIGHTCLICK | CH-08 | Right-click chart menu | PRD CH-08 requires a context menu on right-click with "Buy at price" / "Sell at price" actions that pre-fill the order form. Deferred previously (L-03). Lightweight Charts v5 supports custom context menus; backend and order pre-fill plumbing already exists. |
-| WL-REORDER | API-SPEC | Watchlist item drag reorder not wired | Backend has `PATCH /watchlist/{wl_id}/items/reorder` endpoint that persists display_order. The frontend `WatchlistPanel.tsx` shows items in order but has no drag-to-reorder UI. The endpoint is never called from the frontend. |
-| BASKET-ORDERS | — | Bracket/basket order UI | Kite supports bracket orders (BUY + SL + target in one submit). Not in PRD v5.1 but frequently requested by active traders. |
-| HOLIDAY-CAL | PRD §5.1 | Exchange holiday awareness | PRD §5.1 notes D-1 must resolve correctly across holidays (e.g. Monday's D-1 is Friday). No NSE/BSE holiday calendar is integrated. Charts show blank candles on holidays with no explanation. The `isNseMarketOpen()` helper in Orders.tsx only checks weekdays + time window — it does not account for declared exchange holidays. |
-| SWAGGER | NFR | OpenAPI docs not exposed | FastAPI auto-generates `/docs` (Swagger UI) for free. Currently disabled in production config. Useful for debugging and integration testing. |
-| DOCKER | PRD §9 | No Docker Compose for self-hosting | PRD §9 lists "Docker + Docker Compose" as the containerization target for local self-hosting on macOS. No `docker-compose.yml` exists in the repo. |
-| ALEMBIC | PRD §9 | No Alembic migration setup | PRD §9 lists "SQLAlchemy 2.0 async + Alembic (migrations)" as the ORM stack. Alembic is not configured; schema changes require manual DB recreation. |
+| ID | What was closed |
+|----|-----------------|
+| ALEMBIC | Fully implemented: `backend/alembic.ini`, async `env.py` (imports Base + settings), `versions/0001_initial_schema.py` covering all 9 tables. CLI-driven (`alembic upgrade head`). `create_all_tables()` retained for dev/tests only. |
+| KITE-MARGIN-REQ | `POST /orders/margins` endpoint added (`backend/routers/orders.py`) with `OrderMarginItem/Result/Response` schemas. Frontend: `fetchOrderMargins()` in `orders.ts`; async margin fetch in `handlePlaceOrder` before showing review dialog; SPAN + exposure + total displayed in confirmation modal. |
+| BASKET-ORDERS | Backend: `"bo"` added to `variety` Literal; `squareoff/stoploss/trailing_stoploss` fields in `PlaceOrderRequest`; bracket validation in `place_order` handler. Frontend: `isBracket` toggle (equity+market-hours only), bracket fields UI, forces `product=MIS`+`orderType=LIMIT`, passes bracket kwargs to `placeOrder()`, shows in review dialog. |
+| SCHED-KPI | `_job_recompute_kpis()` added to `backend/scheduler.py`; registered at Mon–Fri 09:25 IST via `CronTrigger`. Pre-warms OHLCV cache by running all KPI evaluations per active user post-open. |
+| HOLIDAY-CAL | New `backend/holidays.py` module: static 2026 NSE holidays + `load_holidays_from_kite()` + `is_exchange_holiday()` + `prev_trading_day()`. Wired into `scheduler.py` (D-1 resolution), `kpis.py` (`_market_is_open()`), `main.py` (startup holiday load). Frontend `isNseMarketOpen()` in `Orders.tsx` checks `NSE_HOLIDAYS_2026` Set. |
+| WL-REORDER | Native HTML5 drag-and-drop added to `WatchlistPanel.tsx`; `GripVertical` icon per row; optimistic reorder + rollback; calls already-implemented `reorderWatchlistItems()` API. |
+| CH-08-RIGHTCLICK | DOM `contextmenu` listener in `Charts.tsx` reads `coordinateToPrice()`; context menu JSX with "Buy at ₹X" / "Sell at ₹X" buttons; navigates to `/orders?symbol=…&txType=…&price=…`. `Orders.tsx` extended to read these URL params and pre-fill the order form. |
 
----
+## Recently Closed (since 2026-03-16)
+
+| ID | What was closed |
+|----|-----------------|
+| SWAGGER | OpenAPI docs exposed at `/api/docs` (Swagger UI), `/api/redoc` (ReDoc), `/api/openapi.json`. Set explicitly in `main.py` via `docs_url`, `redoc_url`, `openapi_url`. |
+| CHART-PREFS-PERSIST | Chart preferences (interval, chart_type, active_indicators) persisted per user in `users.ui_preferences` via `GET/PUT /user/preferences/chart` endpoints in `preferences.py`. |
+| MA-EMA-SLOPE | `MA_SLOPE` and `EMA_SLOPE` KPI indicators added to `kpi_engine.py`. |
+| TEST-COVERAGE-86 | Backend test coverage at 86%; 318 tests collected. Five new test files: `test_watchlist.py`, `test_ws.py`, `test_ticker.py`, `test_scheduler.py`, `test_preferences.py`. |
 
 ## Recently Closed (since 2026-03-11)
 
 | ID | What was closed |
 |----|-----------------|
-| ORDER-ANY-INSTRUMENT | Orders page (equity + GTT) previously restricted symbol selection to held stocks only. Replaced both `<select>` dropdowns with `InstrumentSearch` component + holdings quick-pick chips. Any NSE/BSE/F&O instrument can now be ordered. `gttExchange` and `gttLastPrice` state added to support non-held GTT instruments. `InstrumentSearch` gained a `className` prop for full-width layout. |
+| CH-DRAWINGS | Drawing tools (horizontal line, trendline, text annotation) in Charts.tsx. Persist per user per instrument+interval via backend CRUD. |
+| KITE-LOT-SIZE | F&O lot-size validation in Orders.tsx using `selectedInstrument.lot_size`. |
+| KITE-TICK-SIZE | Tick-size validation using `selectedInstrument.tick_size`; fallback to 0.05. |
+| PD-09-SYNC | Dashboard calls `getPreferences()` on mount and `savePreferences()` on column/sort change. |
+| CH-06-SIDEBAR | Charts page has holdings sidebar with live search/filter. |
+| ORDER-ANY-INSTRUMENT | Orders page uses `InstrumentSearch` component; any NSE/BSE/F&O instrument can be ordered. |
 
 ---
 
-## Resolution Order (Phase 3+)
-
-```
-Immediate P2 (user-visible correctness)
-  1. CH-06-SIDEBAR   — instruments sidebar in Charts
-  2. CH-DRAWINGS     — draw tools + load/save via backend CRUD
-  3. SCHED-KPI       — add 09:25 IST KPI recompute APScheduler job
-  4. PD-09-SYNC      — wire frontend column prefs to GET/PUT /user/preferences
-
-Kite Parity P2
-  5. KITE-LOT-SIZE   — validate qty % selectedInstrument.lot_size === 0 (data now available)
-  6. KITE-TICK-SIZE  — use selectedInstrument.tick_size instead of hardcoded 0.05
-  7. KITE-MARGIN-REQ — call Kite /margins/orders in pre-order confirmation
-
-Nice-to-have P3
-  8. CH-08-RIGHTCLICK
-  9. WL-REORDER
-  10. HOLIDAY-CAL
-  11. DOCKER / ALEMBIC / SWAGGER
-```
-
----
-
-*Last updated: 2026-03-16*
+*Last updated: 2026-04-03*

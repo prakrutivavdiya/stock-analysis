@@ -6,6 +6,8 @@ import type {
   ModifyOrderResponse,
   CancelOrderResponse,
   ApiOrder,
+  OrderMarginItem,
+  OrderMarginsResponse,
 } from "./types";
 import type { Order } from "../data/mockData";
 
@@ -52,6 +54,15 @@ export function getOrderHistory(
   return apiFetch<{ order_id: string; history: unknown[] }>(
     `/orders/${orderId}/history`
   );
+}
+
+export function fetchOrderMargins(
+  orders: OrderMarginItem[]
+): Promise<OrderMarginsResponse> {
+  return apiFetch<OrderMarginsResponse>("/orders/margins", {
+    method: "POST",
+    body: JSON.stringify({ orders }),
+  });
 }
 
 // ---------------------------------------------------------------------------

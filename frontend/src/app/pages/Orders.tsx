@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import type { Order, GTTOrder } from "../data/mockData";
 import { useAppStore, TTL_MS, isFresh } from "../data/store";
 import { getHoldings, mapHolding } from "../api/portfolio";
-import { getOrders, placeOrder, modifyOrder as apiModifyOrder, cancelOrder, mapOrder } from "../api/orders";
+import { getOrders, placeOrder, fetchOrderMargins, modifyOrder as apiModifyOrder, cancelOrder, mapOrder } from "../api/orders";
 import { getGtts, placeGtt, modifyGtt as apiModifyGtt, deleteGtt, mapGtt } from "../api/gtt";
 import { ApiError } from "../api/client";
 import InstrumentSearch from "../components/InstrumentSearch";
@@ -52,6 +52,10 @@ interface OrderForm {
   triggerPrice: string;
   validity: Validity;
   ttlMinutes: string;
+  // BASKET-ORDERS: bracket order fields (points from entry)
+  squareoff: string;
+  stoploss: string;
+  trailingStoploss: string;
 }
 
 interface GttForm {
@@ -79,6 +83,9 @@ const EMPTY_ORDER: OrderForm = {
   triggerPrice: "",
   validity: "DAY",    // TR-10: default DAY
   ttlMinutes: "15",
+  squareoff: "",
+  stoploss: "",
+  trailingStoploss: "",
 };
 
 const EMPTY_GTT: GttForm = {
@@ -140,15 +147,23 @@ function fmt(n: number) {
   return `₹${n.toFixed(2)}`;
 }
 
-// TR-13: Determine if NSE/BSE market is open (09:15–15:30 IST, Mon–Fri)
+// HOLIDAY-CAL: NSE equity trading holidays for 2026 (ISO date strings in IST)
+const NSE_HOLIDAYS_2026 = new Set([
+  "2026-01-26", "2026-03-25", "2026-04-03", "2026-04-14",
+  "2026-04-17", "2026-05-01", "2026-06-19", "2026-07-06",
+  "2026-08-15", "2026-08-27", "2026-10-02", "2026-10-24",
+  "2026-11-13", "2026-11-14", "2026-11-25", "2026-12-25",
+]);
+
+// TR-13: Determine if NSE/BSE market is open (09:15–15:30 IST, Mon–Fri, non-holiday)
 function isNseMarketOpen(): boolean {
   const now = new Date();
   const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
   const day = ist.getDay(); // 0=Sun, 6=Sat
   if (day === 0 || day === 6) return false;
-  const h = ist.getHours();
-  const m = ist.getMinutes();
-  const mins = h * 60 + m;
+  const dateStr = `${ist.getFullYear()}-${String(ist.getMonth() + 1).padStart(2, "0")}-${String(ist.getDate()).padStart(2, "0")}`;
+  if (NSE_HOLIDAYS_2026.has(dateStr)) return false;
+  const mins = ist.getHours() * 60 + ist.getMinutes();
   return mins >= 9 * 60 + 15 && mins < 15 * 60 + 30;
 }
 
@@ -176,6 +191,13 @@ export default function Orders() {
   const [deleteGttId, setDeleteGttId] = useState<string | null>(null);
   // TR-17: Paper trade mode
   const [paperMode, setPaperMode] = useState(false);
+
+  // BASKET-ORDERS: bracket order toggle
+  const [isBracket, setIsBracket] = useState(false);
+
+  // KITE-MARGIN-REQ: pre-order margin estimate
+  const [marginRequirement, setMarginRequirement] = useState<{ span: number; exposure: number; total: number } | null>(null);
+  const [marginLoading, setMarginLoading] = useState(false);
 
   // CDSL / eDIS authorization flow
   interface CdslPending {
@@ -240,6 +262,7 @@ export default function Orders() {
   }, []);
 
   // KITE-SQUARE-OFF: pre-fill form when navigated from Dashboard square-off button
+  // CH-08-RIGHTCLICK: pre-fill form when navigated from chart right-click menu
   useEffect(() => {
     if (searchParams.get("squareOff") === "1") {
       const symbol = searchParams.get("symbol") ?? "";
@@ -257,9 +280,27 @@ export default function Orders() {
         quantity,
         orderType,
       });
-      // Clear the params so a refresh doesn't re-trigger
       const next = new URLSearchParams(searchParams);
       ["squareOff", "symbol", "exchange", "product", "txType", "quantity", "orderType"].forEach((k) => next.delete(k));
+      setSearchParams(next, { replace: true });
+    } else if (searchParams.get("symbol")) {
+      // Chart right-click pre-fill: ?symbol=X&exchange=Y&txType=BUY&price=P&orderType=LIMIT
+      const symbol = searchParams.get("symbol") ?? "";
+      const exchange = searchParams.get("exchange") ?? "NSE";
+      const txType = (searchParams.get("txType") ?? "BUY") as TxType;
+      const price = searchParams.get("price") ?? "";
+      const orderType = (searchParams.get("orderType") ?? "LIMIT") as OrderType;
+      setOrderForm({
+        ...EMPTY_ORDER,
+        symbol,
+        exchange,
+        txType,
+        price,
+        orderType,
+        product: defaultProduct(exchange),
+      });
+      const next = new URLSearchParams(searchParams);
+      ["symbol", "exchange", "txType", "price", "orderType"].forEach((k) => next.delete(k));
       setSearchParams(next, { replace: true });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -354,6 +395,18 @@ export default function Orders() {
     }
     return null;
   }, [orderForm.quantity, orderForm.price, ltp, availableMargin]);
+
+  // BASKET-ORDERS: bracket field validation
+  const bracketFieldsError = useMemo(() => {
+    if (!isBracket) return null;
+    const sq = Number(orderForm.squareoff);
+    const sl = Number(orderForm.stoploss);
+    if (!orderForm.squareoff || sq <= 0) return "Squareoff (target) must be a positive number of points.";
+    if (!orderForm.stoploss || sl <= 0) return "Stoploss must be a positive number of points.";
+    if (orderForm.trailingStoploss && Number(orderForm.trailingStoploss) <= 0)
+      return "Trailing stoploss must be a positive number of points.";
+    return null;
+  }, [isBracket, orderForm.squareoff, orderForm.stoploss, orderForm.trailingStoploss]);
 
   // Quantity must be a positive whole number
   const qtyError = useMemo(() => {
@@ -462,16 +515,42 @@ export default function Orders() {
     !triggerRequiredError &&
     !slValidationError &&
     !oversellError &&
-    !tickSizeError;
+    !tickSizeError &&
+    !bracketFieldsError;
 
-  const handlePlaceOrder = () => {
+  // KITE-MARGIN-REQ: fetch margin estimate then show review dialog
+  const showReviewWithMargins = async () => {
+    setMarginLoading(true);
+    try {
+      const result = await fetchOrderMargins([{
+        exchange: orderForm.exchange,
+        tradingsymbol: orderForm.symbol,
+        transaction_type: orderForm.txType,
+        variety: isBracket ? "bo" : "regular",
+        product: orderForm.product,
+        order_type: orderForm.orderType,
+        quantity: Number(orderForm.quantity),
+        price: orderForm.price ? Number(orderForm.price) : 0,
+        trigger_price: orderForm.triggerPrice ? Number(orderForm.triggerPrice) : 0,
+      }]);
+      const seg = isEquityExchange(orderForm.exchange) ? result.equity : result.commodity;
+      setMarginRequirement({ span: seg.span, exposure: seg.exposure, total: seg.total });
+    } catch {
+      setMarginRequirement(null); // best-effort; don't block the review dialog
+    } finally {
+      setMarginLoading(false);
+    }
+    setShowOrderReview(true);
+  };
+
+  const handlePlaceOrder = async () => {
     if (!canSubmit) return;
     // TR-12: MARKET orders require slippage acknowledgement
     if (orderForm.orderType === "MARKET" && !slippageAcked) {
       setShowSlippageWarning(true);
       return;
     }
-    setShowOrderReview(true);
+    await showReviewWithMargins();
   };
 
   const user = useAppStore((s) => s.user);
@@ -492,8 +571,9 @@ export default function Orders() {
   const handleConfirmOrder = async () => {
     setShowOrderReview(false);
     try {
-      // TR-13: Auto-select AMO variety outside market hours
-      const variety = isNseMarketOpen() ? "regular" : "amo";
+      // BASKET-ORDERS: bracket orders use variety="bo" (no AMO support)
+      // TR-13: Auto-select AMO variety outside market hours (non-bracket only)
+      const variety = isBracket ? "bo" : (isNseMarketOpen() ? "regular" : "amo");
       await placeOrder({
         tradingsymbol: orderForm.symbol,
         exchange: orderForm.exchange,
@@ -507,11 +587,18 @@ export default function Orders() {
         validity: orderForm.validity,
         validity_ttl: orderForm.validity === "TTL" ? Number(orderForm.ttlMinutes) || 15 : undefined,
         paper_trade: paperMode || (user?.paper_trade_mode ?? false),
+        ...(isBracket && {
+          squareoff: Number(orderForm.squareoff),
+          stoploss: Number(orderForm.stoploss),
+          trailing_stoploss: orderForm.trailingStoploss ? Number(orderForm.trailingStoploss) : undefined,
+        }),
       });
       toast.success(`Order placed — ${orderForm.txType} ${orderForm.symbol}`);
       setOrderForm(EMPTY_ORDER);
       setSelectedInstrument(null);
       setSlippageAcked(false);
+      setIsBracket(false);
+      setMarginRequirement(null);
       // Refresh orders list
       getOrders()
         .then((res) => setOrders(res.orders.map(mapOrder)))
@@ -1006,18 +1093,97 @@ export default function Orders() {
                 )}
               </Field>
 
+              {/* BASKET-ORDERS: bracket order toggle (equity + market hours only) */}
+              {isEquityExchange(orderForm.exchange) && (
+                <div className="border border-[#2a2a2a] rounded p-2.5 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-muted-foreground">Bracket order (BO)</span>
+                      <span title="Bracket orders automatically place a target (squareoff) and a stop-loss around your entry. Available only during market hours for equity." className="inline-flex cursor-help">
+                        <Info className="w-3 h-3 text-muted-foreground/40 hover:text-muted-foreground" />
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = !isBracket;
+                        setIsBracket(next);
+                        if (next) {
+                          setOrderForm((f) => ({ ...f, product: "MIS", orderType: "LIMIT" }));
+                        }
+                      }}
+                      disabled={!isNseMarketOpen()}
+                      className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                        isBracket
+                          ? "border-[#FF6600]/50 bg-[#FF6600]/10 text-[#FF6600]"
+                          : "border-[#2a2a2a] text-muted-foreground hover:border-[#3a3a3a]"
+                      }`}
+                    >
+                      {isBracket ? "ON" : "OFF"}
+                    </button>
+                  </div>
+                  {!isNseMarketOpen() && (
+                    <p className="text-[10px] text-muted-foreground/50">Bracket orders are only available during market hours (9:15–15:30 IST).</p>
+                  )}
+                  {isBracket && (
+                    <div className="space-y-2 pt-1">
+                      <Field label="Target (squareoff, pts)" tooltip="Points above entry (for BUY) or below entry (for SELL) at which the position auto-squares off with profit.">
+                        <input
+                          type="number"
+                          min={0.05}
+                          step={0.05}
+                          value={orderForm.squareoff}
+                          onChange={(e) => setOf("squareoff", e.target.value)}
+                          placeholder="e.g. 10"
+                          className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#FF6600]"
+                        />
+                      </Field>
+                      <Field label="Stoploss (pts)" tooltip="Points below entry (for BUY) or above entry (for SELL) at which the stop-loss fires.">
+                        <input
+                          type="number"
+                          min={0.05}
+                          step={0.05}
+                          value={orderForm.stoploss}
+                          onChange={(e) => setOf("stoploss", e.target.value)}
+                          placeholder="e.g. 5"
+                          className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#FF6600]"
+                        />
+                      </Field>
+                      <Field label="Trailing SL (pts, opt.)" tooltip="Optional: trailing stop-loss in points. As price moves in your favor, the stop-loss trails by this many points.">
+                        <input
+                          type="number"
+                          min={0.05}
+                          step={0.05}
+                          value={orderForm.trailingStoploss}
+                          onChange={(e) => setOf("trailingStoploss", e.target.value)}
+                          placeholder="optional"
+                          className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded px-2 py-1.5 text-sm focus:outline-none focus:border-[#FF6600]"
+                        />
+                      </Field>
+                      {bracketFieldsError && <Warn color="red">{bracketFieldsError}</Warn>}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <button
                 onClick={handlePlaceOrder}
-                disabled={!canSubmit}
+                disabled={!canSubmit || marginLoading}
                 className={`w-full py-2.5 rounded text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                   orderForm.txType === "BUY"
                     ? "bg-green-700 hover:bg-green-600 text-white"
                     : "bg-red-700 hover:bg-red-600 text-white"
                 }`}
               >
-                {paperMode && <span className="text-xs mr-1 opacity-75">[PAPER]</span>}
-                {orderForm.txType === "BUY" ? "Buy" : "Sell"}{" "}
-                {orderForm.symbol || "…"}
+                {marginLoading ? (
+                  <span className="opacity-75">Checking margin…</span>
+                ) : (
+                  <>
+                    {paperMode && <span className="text-xs mr-1 opacity-75">[PAPER]</span>}
+                    {isBracket && <span className="text-xs mr-1 opacity-75">[BO]</span>}
+                    {orderForm.txType === "BUY" ? "Buy" : "Sell"}{" "}
+                    {orderForm.symbol || "…"}
+                  </>
+                )}
               </button>
             </div>
           ) : (
@@ -1377,10 +1543,10 @@ export default function Orders() {
                 Cancel
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
                   setSlippageAcked(true);
                   setShowSlippageWarning(false);
-                  setShowOrderReview(true);
+                  await showReviewWithMargins();
                 }}
                 className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded transition-colors"
               >
@@ -1414,7 +1580,26 @@ export default function Orders() {
                 <ReviewRow label="Trigger price" value={`₹${orderForm.triggerPrice}`} />
               )}
               <ReviewRow label="Validity" value={orderForm.validity === "DAY" ? "Day" : orderForm.validity === "IOC" ? "IOC" : `TTL — ${orderForm.ttlMinutes} min`} />
+              {isBracket && <ReviewRow label="Variety" value="Bracket (BO)" />}
+              {isBracket && orderForm.squareoff && <ReviewRow label="Target" value={`+${orderForm.squareoff} pts`} />}
+              {isBracket && orderForm.stoploss && <ReviewRow label="Stoploss" value={`-${orderForm.stoploss} pts`} />}
+              {isBracket && orderForm.trailingStoploss && <ReviewRow label="Trailing SL" value={`${orderForm.trailingStoploss} pts`} />}
             </div>
+
+            {/* KITE-MARGIN-REQ: margin requirement */}
+            {marginRequirement && (
+              <div className="px-5 pb-4">
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2">Margin Required</p>
+                <div className="bg-[#0f0f0f] border border-[#2a2a2a] rounded p-3 space-y-1.5 text-xs">
+                  <ChargeRow label="SPAN margin" value={fmt(marginRequirement.span)} />
+                  <ChargeRow label="Exposure margin" value={fmt(marginRequirement.exposure)} />
+                  <div className="border-t border-[#2a2a2a] pt-1.5 flex justify-between font-medium">
+                    <span>Total margin</span>
+                    <span>{fmt(marginRequirement.total)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* TR-14: Estimated charges breakdown */}
             {charges && (

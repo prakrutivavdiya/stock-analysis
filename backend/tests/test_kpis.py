@@ -19,7 +19,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import KPI
-from tests.conftest import USER_ID, seed_kpi, seed_ohlcv, seed_user
+from tests.conftest import OTHER_USER_ID, USER_ID, seed_kpi, seed_ohlcv, seed_other_user, seed_user
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,9 +280,9 @@ async def test_kpi_user_isolation(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     """KPIs owned by a different user are not visible to the authenticated user."""
-    other_user_id = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    await seed_other_user(db_session)
     other_kpi = KPI(
-        user_id=other_user_id,
+        user_id=OTHER_USER_ID,
         name="Other User KPI",
         formula="CLOSE",
         return_type="SCALAR",

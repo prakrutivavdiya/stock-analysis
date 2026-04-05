@@ -42,7 +42,7 @@ export interface Order {
   id: string;
   symbol: string;
   exchange: string;                                          // API_SPEC GET /orders
-  variety: "regular" | "co" | "amo" | "iceberg" | "auction"; // required for PUT/DELETE per API_SPEC
+  variety: "regular" | "co" | "amo" | "iceberg" | "auction" | "bo"; // required for PUT/DELETE per API_SPEC
   type: "BUY" | "SELL";
   product: "CNC" | "MIS" | "NRML";
   quantity: number;

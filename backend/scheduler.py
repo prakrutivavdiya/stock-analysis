@@ -5,8 +5,7 @@ Schedule (IST — Asia/Kolkata)
 ─────────────────────────────
   Mon–Fri 08:30  Reload Kite instruments dump into memory
   Mon–Fri 09:20  Fetch D-1 daily OHLCV for all held instruments (warm ohlcv_cache)
-  Mon–Fri 09:25  Pre-warm KPI computation: noop (KPIs computed on-demand via API;
-                  this job just ensures OHLCV cache is populated first)
+  Mon–Fri 09:25  Recompute all active KPIs for all users' holdings (pre-warm + error surfacing)
   Sunday  08:00  Refresh fundamental data from NSE India for all held instruments
 """
 from __future__ import annotations
@@ -206,15 +205,100 @@ async def _job_refresh_fundamentals() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Job: recompute all active KPIs for all users' holdings (09:25 IST Mon–Fri)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _job_recompute_kpis() -> None:
+    """
+    Pre-warm KPI computation at 09:25 IST (5 min after D-1 OHLCV job).
+
+    For each active user:
+      1. Fetch their holdings from Kite.
+      2. Load active KPI definitions from DB.
+      3. Evaluate every KPI×holding combination using cached OHLCV + fundamentals.
+
+    Results are NOT persisted — the purpose is to:
+      - Ensure the OHLCV cache is warmed before the first user page load.
+      - Surface formula evaluation errors in server logs early.
+
+    Satisfies PRD §6.1 ("Scheduled job recomputes all active KPIs") and §9.
+    """
+    from kiteconnect import KiteConnect
+
+    from backend.config import settings
+    from backend.crypto import decrypt_token
+    from backend.kpi_engine import evaluate_formula
+    from backend.models import KPI as KPIModel
+    from backend.routers.kpis import _load_fundamental, _load_ohlcv_df
+
+    log.info("Scheduler: starting KPI pre-warm recompute")
+    total_evals = 0
+
+    async with AsyncSessionLocal() as db:
+        users = (await db.execute(
+            select(User).where(User.is_active == True)  # noqa: E712
+        )).scalars().all()
+
+        for user in users:
+            try:
+                kc = KiteConnect(api_key=settings.KITE_API_KEY)
+                kc.set_access_token(
+                    decrypt_token(user.kite_access_token_enc, settings.KITE_ENCRYPTION_KEY)
+                )
+                holdings = await asyncio.to_thread(kc.holdings)
+            except Exception as exc:
+                log.warning("KPI scheduler: failed to get holdings for %s: %s", user.kite_user_id, exc)
+                continue
+
+            kpis = (await db.execute(
+                select(KPIModel).where(
+                    KPIModel.user_id == user.id,
+                    KPIModel.is_active == True,  # noqa: E712
+                )
+            )).scalars().all()
+
+            if not kpis:
+                continue
+
+            today = _prev_trading_day()
+
+            for h in holdings:
+                token = h.get("instrument_token")
+                symbol = h.get("tradingsymbol", "")
+                exchange = h.get("exchange", "NSE")
+                if not token:
+                    continue
+
+                try:
+                    df = await _load_ohlcv_df(
+                        db, kc, token, today, "day", False, symbol, exchange
+                    )
+                    fundamental = await _load_fundamental(db, token, symbol, exchange)
+                except Exception as exc:
+                    log.warning("KPI scheduler: OHLCV/fundamental load failed for %s: %s", symbol, exc)
+                    continue
+
+                for kpi in kpis:
+                    try:
+                        evaluate_formula(kpi.formula, df, fundamental, kpi.return_type)
+                        total_evals += 1
+                    except Exception as exc:
+                        log.warning(
+                            "KPI scheduler: formula error — KPI=%r symbol=%r: %s",
+                            kpi.name, symbol, exc,
+                        )
+
+    log.info("Scheduler: KPI pre-warm complete — %d evaluations", total_evals)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _prev_trading_day() -> date:
-    """Return the most recent Monday–Friday prior to today (IST)."""
-    d = datetime.now(IST).date() - timedelta(days=1)
-    while d.weekday() >= 5:  # Saturday=5, Sunday=6
-        d -= timedelta(days=1)
-    return d
+    """Return the most recent NSE trading day prior to today (IST), skipping weekends + holidays."""
+    from backend.holidays import prev_trading_day
+    return prev_trading_day(datetime.now(IST).date())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +317,13 @@ async def start_scheduler() -> None:
         _job_fetch_d1_ohlcv,
         CronTrigger(hour=9, minute=20, day_of_week="mon-fri", timezone=IST),
         id="fetch_d1_ohlcv",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    _scheduler.add_job(
+        _job_recompute_kpis,
+        CronTrigger(hour=9, minute=25, day_of_week="mon-fri", timezone=IST),
+        id="recompute_kpis",
         replace_existing=True,
         misfire_grace_time=300,
     )
