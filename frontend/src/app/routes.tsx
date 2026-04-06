@@ -8,6 +8,7 @@ import KPIGuide from "./pages/KPIGuide";
 import Orders from "./pages/Orders";
 import AuditLog from "./pages/AuditLog";
 import Settings from "./pages/Settings";
+import Alerts from "./pages/Alerts";
 import NotFound from "./pages/NotFound";
 
 export const router = createBrowserRouter([
@@ -54,6 +55,10 @@ export const router = createBrowserRouter([
       {
         path: "settings",
         Component: Settings,
+      },
+      {
+        path: "alerts",
+        Component: Alerts,
       },
       {
         path: "*",

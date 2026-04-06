@@ -21,7 +21,7 @@
 
 import { create } from "zustand";
 import type { Holding, Position, Order, Margin, GTTOrder } from "./mockData";
-import type { MeResponse, WatchlistOut } from "../api/types";
+import type { MeResponse, WatchlistOut, AlertOut, AlertNotificationOut } from "../api/types";
 import type { LiveTick } from "../api/quotes";
 
 // ---------------------------------------------------------------------------
@@ -137,6 +137,18 @@ interface AppStore {
   activeWatchlistId: string | null;
   setActiveWatchlistId: (id: string | null) => void;
 
+  // --- Alerts ---
+  alerts: AlertOut[];
+  alertNotifications: AlertNotificationOut[];
+  unreadAlertsCount: number;
+  setAlerts: (data: AlertOut[]) => void;
+  upsertAlert: (a: AlertOut) => void;
+  removeAlert: (id: string) => void;
+  addAlertNotification: (n: AlertNotificationOut) => void;
+  setAlertNotifications: (data: AlertNotificationOut[]) => void;
+  incrementUnread: () => void;
+  resetUnread: () => void;
+
   // --- TTL helpers ---
   isHoldingsFresh: () => boolean;
   isPositionsFresh: () => boolean;
@@ -165,6 +177,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
   margins: emptyCache<Margin>(),
   watchlists: emptyCache<WatchlistOut[]>(),
   activeWatchlistId: null,
+  alerts: [],
+  alertNotifications: [],
+  unreadAlertsCount: 0,
   kpiValues: {},
   ohlcvSession: {},
   indicatorValues: {},
@@ -239,6 +254,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
   // --- Watchlist actions ---
   setWatchlists: (data) => set({ watchlists: { data, fetchedAt: Date.now() } }),
   setActiveWatchlistId: (id) => set({ activeWatchlistId: id }),
+
+  // --- Alert actions ---
+  setAlerts: (data) => set({ alerts: data }),
+  upsertAlert: (a) =>
+    set((s) => {
+      const idx = s.alerts.findIndex((x) => x.id === a.id);
+      if (idx === -1) return { alerts: [a, ...s.alerts] };
+      const next = [...s.alerts];
+      next[idx] = a;
+      return { alerts: next };
+    }),
+  removeAlert: (id) =>
+    set((s) => ({ alerts: s.alerts.filter((x) => x.id !== id) })),
+  addAlertNotification: (n) =>
+    set((s) => ({ alertNotifications: [n, ...s.alertNotifications] })),
+  setAlertNotifications: (data) => set({ alertNotifications: data }),
+  incrementUnread: () => set((s) => ({ unreadAlertsCount: s.unreadAlertsCount + 1 })),
+  resetUnread: () => set({ unreadAlertsCount: 0 }),
 
   // --- TTL helpers ---
   isHoldingsFresh: () => isFresh(get().holdings.fetchedAt, TTL_MS.holdings),

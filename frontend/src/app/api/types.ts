@@ -464,3 +464,80 @@ export interface ColumnDefinition {
 export interface ColumnsResponse {
   columns: ColumnDefinition[];
 }
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+
+export type AlertConditionType =
+  | "PRICE_ABOVE"
+  | "PRICE_BELOW"
+  | "PRICE_CROSS_ABOVE"
+  | "PRICE_CROSS_BELOW"
+  | "PCT_CHANGE_ABOVE"
+  | "PCT_CHANGE_BELOW";
+
+export type AlertStatus = "ACTIVE" | "TRIGGERED" | "DISABLED";
+
+export interface AlertNotificationOut {
+  id: string;
+  alert_id: string;
+  tradingsymbol: string;
+  exchange: string;
+  triggered_at: string;
+  trigger_price: string | null;
+  message: string;
+}
+
+export interface AlertOut {
+  id: string;
+  tradingsymbol: string;
+  exchange: string;
+  instrument_token: number;
+  condition_type: AlertConditionType;
+  threshold: string;       // Decimal serialised as string by FastAPI
+  note: string | null;
+  status: AlertStatus;
+  triggered_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_notification: AlertNotificationOut | null;
+}
+
+export interface AlertsListResponse {
+  alerts: AlertOut[];
+  total: number;
+}
+
+export interface AlertNotificationsListResponse {
+  notifications: AlertNotificationOut[];
+  total: number;
+}
+
+export interface AlertCreateRequest {
+  tradingsymbol: string;
+  exchange: string;
+  instrument_token: number;
+  condition_type: AlertConditionType;
+  threshold: number;
+  note?: string;
+}
+
+export interface AlertUpdateRequest {
+  condition_type?: AlertConditionType;
+  threshold?: number;
+  note?: string;
+  status?: "ACTIVE" | "DISABLED";
+}
+
+/** Payload pushed over WebSocket when an alert fires. */
+export interface AlertWsMessage {
+  alert_id: string;
+  tradingsymbol: string;
+  exchange: string;
+  condition_type: AlertConditionType;
+  threshold: string;
+  trigger_price: number;
+  message: string;
+  triggered_at: string;
+}

@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
+  Bell,
   ChevronDown,
   ChevronUp,
   ChevronsUpDown,
@@ -28,6 +29,8 @@ import { getKpiPortfolio } from "../api/kpis";
 import { getColumns, getPreferences, savePreferences } from "../api/preferences";
 import { visibleHoldingsColumns, holdingsSort } from "../data/localPrefs";
 import { ApiError } from "../api/client";
+import AlertFormModal from "../components/AlertFormModal";
+import type { AlertOut } from "../api/types";
 import type { ColumnDefinition, ColFilterType } from "../api/types";
 
 // ── Format functions (frontend-only JSX renderers keyed by column id) ───────
@@ -104,6 +107,12 @@ export default function Dashboard() {
   const [showPositions, setShowPositions] = useState(true);
   const [loading, setLoading] = useState(false);
   const [xirr, setXirr] = useState<number | null>(null);
+
+  // Alert modal state
+  const [alertModalOpen, setAlertModalOpen] = useState(false);
+  const [alertTarget, setAlertTarget] = useState<{
+    symbol: string; exchange: string; token: number; ltp: number;
+  } | null>(null);
 
   const savedSort = holdingsSort.get();
   const [sortKey, setSortKey] = useState<SortKey>((savedSort.column as SortKey) || "symbol");
@@ -756,7 +765,7 @@ export default function Dashboard() {
             {filteredAndSorted.map((holding) => (
               <tr
                 key={holding.symbol}
-                className="border-b border-[#1a1a1a] hover:bg-[#141414] cursor-pointer transition-colors"
+                className="group border-b border-[#1a1a1a] hover:bg-[#141414] cursor-pointer transition-colors"
                 onClick={() => navigate(`/charts/${holding.symbol}`)}
               >
                 <td className="px-4 py-2">
@@ -850,6 +859,26 @@ export default function Dashboard() {
                     </td>
                   );
                 })}
+                {/* Bell icon — set alert for this holding */}
+                <td className="px-2 py-2 w-8">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const tick = holding.instrumentToken != null ? livePrices[holding.instrumentToken] : undefined;
+                      setAlertTarget({
+                        symbol: holding.symbol,
+                        exchange: holding.exchange,
+                        token: holding.instrumentToken ?? 0,
+                        ltp: tick?.ltp ?? holding.ltp,
+                      });
+                      setAlertModalOpen(true);
+                    }}
+                    className="p-1 rounded hover:bg-[#2a2a2a] text-muted-foreground hover:text-[#FF6600] transition-colors opacity-0 group-hover:opacity-100"
+                    title={`Set alert for ${holding.symbol}`}
+                  >
+                    <Bell className="w-3.5 h-3.5" />
+                  </button>
+                </td>
               </tr>
             ))}
             {filteredAndSorted.length === 0 && (
@@ -966,6 +995,18 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+      {/* Alert modal */}
+      {alertTarget && (
+        <AlertFormModal
+          open={alertModalOpen}
+          onClose={() => { setAlertModalOpen(false); setAlertTarget(null); }}
+          onSaved={(_saved: AlertOut) => { /* stored in Alerts page */ }}
+          tradingsymbol={alertTarget.symbol}
+          exchange={alertTarget.exchange}
+          instrumentToken={alertTarget.token}
+          ltp={alertTarget.ltp}
+        />
+      )}
     </div>
   );
 }

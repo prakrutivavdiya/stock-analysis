@@ -6,6 +6,7 @@ import {
   Gauge,
   Receipt,
   ClipboardList,
+  Bell,
   LogOut,
   Menu,
   RefreshCw,
@@ -28,6 +29,7 @@ import { logout } from "../api/auth";
 import { ApiError } from "../api/client";
 import { useQuotesSocket } from "../api/quotes";
 import WatchlistPanel from "./WatchlistPanel";
+import AlertBell from "./AlertBell";
 
 function getInitials(name: string): string {
   return name
@@ -94,6 +96,7 @@ export default function AppShell() {
     { path: "/charts", label: "Charts", icon: CandlestickChart },
     { path: "/kpis", label: "KPIs", icon: Gauge },
     { path: "/orders", label: "Orders", icon: Receipt },
+    { path: "/alerts", label: "Alerts", icon: Bell },
     { path: "/audit", label: "Audit Log", icon: ClipboardList },
   ];
 
@@ -159,6 +162,7 @@ export default function AppShell() {
             <button className="p-2 hover:bg-[#2a2a2a] rounded" title="Refresh live data">
               <RefreshCw className="w-4 h-4" />
             </button>
+            <AlertBell />
             <button
               onClick={() => setWatchlistOpen((v) => !v)}
               className={`p-2 hover:bg-[#2a2a2a] rounded transition-colors ${watchlistOpen ? "text-[#FF6600]" : "text-muted-foreground hover:text-foreground"}`}

@@ -116,9 +116,9 @@ def test_ws_receives_tick_data():
 
     ticks = [{"instrument_token": 408065, "ltp": 1500.0, "change": 0.5}]
 
-    # Build a pre-seeded queue
+    # Build a pre-seeded queue with the fully-formed message format
     q: asyncio.Queue = asyncio.Queue()
-    q.put_nowait(ticks)  # The endpoint will pull this on the first await q.get()
+    q.put_nowait({"type": "tick", "data": ticks})
 
     with patch.object(ticker_mgr, "add_client", return_value=q), \
          patch.object(ticker_mgr, "remove_client"):

@@ -22,6 +22,7 @@ from backend.config import settings
 
 from backend.limiter import limiter
 from backend.routers import (
+    alerts,
     audit,
     auth,
     charts,
@@ -232,4 +233,5 @@ app.include_router(audit.router,        prefix=f"{_V1}/audit",         tags=["au
 app.include_router(preferences.columns_router, prefix=f"{_V1}/user/columns",      tags=["preferences"])
 app.include_router(preferences.router,         prefix=f"{_V1}/user/preferences",  tags=["preferences"])
 app.include_router(watchlist.router,    prefix=f"{_V1}/watchlist",         tags=["watchlist"])
+app.include_router(alerts.router,       prefix=f"{_V1}/alerts",            tags=["alerts"])
 app.include_router(ws.router,           tags=["ws"])  # /ws/quotes — no /api/v1 prefix

@@ -136,6 +136,9 @@ class User(Base):
     watchlists: Mapped[list["Watchlist"]] = relationship(
         "Watchlist", back_populates="user", cascade="all, delete-orphan"
     )
+    alerts: Mapped[list["Alert"]] = relationship(
+        "Alert", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Indexes per DATA_MODEL spec
     __table_args__ = (
@@ -690,6 +693,121 @@ class Watchlist(Base):
 
     def __repr__(self) -> str:
         return f"<Watchlist name={self.name!r} user_id={self.user_id}>"
+
+
+# ---------------------------------------------------------------------------
+# 10. alerts
+# One-shot price/pct alerts per user+instrument
+# Once condition fires → status becomes TRIGGERED; user can re-enable by editing
+# ---------------------------------------------------------------------------
+
+ALERT_CONDITION_TYPES = (
+    "PRICE_ABOVE",
+    "PRICE_BELOW",
+    "PRICE_CROSS_ABOVE",
+    "PRICE_CROSS_BELOW",
+    "PCT_CHANGE_ABOVE",
+    "PCT_CHANGE_BELOW",
+)
+
+ALERT_STATUSES = ("ACTIVE", "TRIGGERED", "DISABLED")
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        default=uuid.uuid4, server_default=text("gen_random_uuid()"),
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    tradingsymbol: Mapped[str] = mapped_column(String(50), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(10), nullable=False)
+    instrument_token: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    condition_type: Mapped[str] = mapped_column(
+        String(30), nullable=False,
+        comment="PRICE_ABOVE | PRICE_BELOW | PRICE_CROSS_ABOVE | PRICE_CROSS_BELOW | PCT_CHANGE_ABOVE | PCT_CHANGE_BELOW",
+    )
+    threshold: Mapped[Decimal] = mapped_column(
+        Numeric(18, 4), nullable=False,
+        comment="Price level or % change threshold",
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ACTIVE → TRIGGERED (auto on fire) or DISABLED (manual)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="ACTIVE", server_default=text("'ACTIVE'"),
+        comment="ACTIVE | TRIGGERED | DISABLED",
+    )
+    triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=text("NOW()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=text("NOW()"),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="alerts")
+    notifications: Mapped[list["AlertNotification"]] = relationship(
+        "AlertNotification", back_populates="alert", cascade="all, delete-orphan",
+        order_by="AlertNotification.triggered_at.desc()",
+    )
+
+    __table_args__ = (
+        Index("ix_alerts_user_id", "user_id"),
+        Index("ix_alerts_instrument_token", "instrument_token"),
+        Index("ix_alerts_user_status", "user_id", "status"),
+        # Fast lookup for tick evaluation: active alerts by token
+        Index("ix_alerts_token_status", "instrument_token", "status"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Alert {self.tradingsymbol!r} {self.condition_type} {self.threshold} status={self.status!r}>"
+
+
+# ---------------------------------------------------------------------------
+# 11. alert_notifications
+# Immutable log of each time an alert fires
+# ---------------------------------------------------------------------------
+
+class AlertNotification(Base):
+    __tablename__ = "alert_notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        default=uuid.uuid4, server_default=text("gen_random_uuid()"),
+    )
+    alert_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    tradingsymbol: Mapped[str] = mapped_column(String(50), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(10), nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=text("NOW()"),
+    )
+    trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    message: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    # Relationships
+    alert: Mapped["Alert"] = relationship("Alert", back_populates="notifications")
+
+    __table_args__ = (
+        Index("ix_alert_notifs_user_id", "user_id"),
+        Index("ix_alert_notifs_alert_id", "alert_id"),
+        Index("ix_alert_notifs_user_triggered", "user_id", "triggered_at"),
+    )
 
 
 # ---------------------------------------------------------------------------

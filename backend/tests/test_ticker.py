@@ -112,7 +112,9 @@ def test_on_ticks_payload_structure():
     loop.run_until_complete(asyncio.sleep(0.05))
 
     assert not q.empty()
-    payload = q.get_nowait()
+    msg = q.get_nowait()
+    assert msg["type"] == "tick"
+    payload = msg["data"]
     assert len(payload) == 1
     item = payload[0]
     assert item["instrument_token"] == 408065

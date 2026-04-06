@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { X, Plus, Search, Star, Pencil, Trash2, ShoppingCart, GripVertical } from "lucide-react";
+import { X, Plus, Search, Star, Pencil, Trash2, ShoppingCart, GripVertical, Bell } from "lucide-react";
 import { toast } from "sonner";
 import { useAppStore } from "../data/store";
 import {
@@ -13,6 +13,7 @@ import {
 } from "../api/watchlist";
 import { searchInstruments } from "../api/instruments";
 import type { WatchlistOut, WatchlistItemOut, InstrumentResult } from "../api/types";
+import AlertFormModal from "./AlertFormModal";
 
 interface Props {
   onClose: () => void;
@@ -46,6 +47,10 @@ export default function WatchlistPanel({ onClose, onOrderIntent }: Props) {
   const [renameValue, setRenameValue] = useState("");
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const dragItemId = useRef<string | null>(null);
+
+  // Alert modal
+  const [alertModalOpen, setAlertModalOpen] = useState(false);
+  const [alertItem, setAlertItem] = useState<WatchlistItemOut | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -439,8 +444,8 @@ export default function WatchlistPanel({ onClose, onOrderIntent }: Props) {
                 </div>
               )}
 
-              {/* Row 4: Buy / Sell buttons */}
-              <div className="flex gap-2">
+              {/* Row 4: Buy / Sell / Alert buttons */}
+              <div className="flex gap-1.5">
                 <button
                   onClick={() => onOrderIntent?.(item.tradingsymbol, item.exchange, "BUY")}
                   className="flex-1 flex items-center justify-center gap-1 py-1 rounded text-[11px] font-medium bg-green-900/30 text-green-400 hover:bg-green-900/60 transition-colors"
@@ -455,11 +460,31 @@ export default function WatchlistPanel({ onClose, onOrderIntent }: Props) {
                   <ShoppingCart className="w-3 h-3" />
                   Sell
                 </button>
+                <button
+                  onClick={() => { setAlertItem(item); setAlertModalOpen(true); }}
+                  className="px-2 py-1 rounded text-[11px] font-medium border border-[#2a2a2a] text-muted-foreground hover:text-[#FF6600] hover:border-[#FF6600] transition-colors"
+                  title="Set alert"
+                >
+                  <Bell className="w-3 h-3" />
+                </button>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Alert form modal for watchlist items */}
+      {alertItem && (
+        <AlertFormModal
+          open={alertModalOpen}
+          onClose={() => { setAlertModalOpen(false); setAlertItem(null); }}
+          onSaved={() => { /* toast shown inside modal */ }}
+          tradingsymbol={alertItem.tradingsymbol}
+          exchange={alertItem.exchange}
+          instrumentToken={alertItem.instrument_token}
+          ltp={livePrices[alertItem.instrument_token]?.ltp}
+        />
+      )}
     </div>
   );
 }
