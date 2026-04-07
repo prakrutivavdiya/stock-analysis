@@ -45,6 +45,10 @@ const CHART_TYPES = [
   { label: "Area",    value: "area"   },
 ] as const;
 
+/** IST is UTC+5:30 = 19800 s. Shift intraday epoch timestamps so that
+ *  LightweightCharts (which renders in UTC) displays IST clock times. */
+const IST_OFFSET_SECS = 19800;
+
 // ---------------------------------------------------------------------------
 // Indicator catalog
 // ---------------------------------------------------------------------------
@@ -262,8 +266,11 @@ export default function Charts() {
   const panelRef       = useRef<HTMLDivElement>(null);
   const candleCacheRef = useRef<CandleCache | null>(null);
   // Live candle update refs — written by chart useEffect, read by tick subscriber
-  const seriesRef  = useRef<ReturnType<IChartApi["addSeries"]> | null>(null);
-  const tokenRef   = useRef<number | null>(null);
+  const seriesRef        = useRef<ReturnType<IChartApi["addSeries"]> | null>(null);
+  const tokenRef         = useRef<number | null>(null);
+  const chartTypeRef     = useRef<string>("candle");
+  const currentCandleRef = useRef<{ time: UTCTimestamp; open: number; high: number; low: number } | null>(null);
+  chartTypeRef.current = chartType; // keep in sync — read by live-update effect
 
   // Drawing tools state & refs
   const [drawingMode, setDrawingMode] = useState<DrawingMode>("none");
@@ -507,7 +514,7 @@ export default function Charts() {
 
     const toTime = (ts: string): UTCTimestamp =>
       isIntraday
-        ? (Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp)
+        ? ((Math.floor(new Date(ts).getTime() / 1000) + IST_OFFSET_SECS) as UTCTimestamp)
         : (ts.slice(0, 10) as unknown as UTCTimestamp);
 
     async function load() {
@@ -676,6 +683,13 @@ export default function Charts() {
         priceSeries.setData(chartType === "candle" || chartType === "bar" ? ohlcData : lineData);
         seriesRef.current = priceSeries;
         tokenRef.current  = token;
+        // Seed current-candle state so live ticks continue the last historical candle
+        if (isIntraday && ohlcData.length > 0) {
+          const last = ohlcData[ohlcData.length - 1];
+          currentCandleRef.current = { time: last.time, open: last.open, high: last.high, low: last.low };
+        } else {
+          currentCandleRef.current = null;
+        }
 
         // ── 4. Indicators ─────────────────────────────────────────────────
         // Extracted into renderIndicators so it can be re-called after lazy-loading older candles.
@@ -889,6 +903,7 @@ export default function Charts() {
     load();
     return () => {
       cancelled = true;
+      currentCandleRef.current = null;
       if (containerRef.current && contextMenuHandlerRef.current) {
         containerRef.current.removeEventListener("contextmenu", contextMenuHandlerRef.current);
       }
@@ -903,7 +918,6 @@ export default function Charts() {
   useEffect(() => {
     const backendInterval = INTERVALS.find((iv) => iv.value === interval)?.backend ?? "day";
     const isIntraday = backendInterval !== "day";
-    // Use the interval value directly (e.g. "120" → 120 min for 2hr), not the backend string
     const intervalMins = isIntraday ? parseInt(interval) : 0;
 
     return useAppStore.subscribe((state, prevState) => {
@@ -911,16 +925,40 @@ export default function Charts() {
       if (token === -1) return;
       const tick = state.livePrices[token];
       if (!tick || tick === prevState.livePrices[token] || !seriesRef.current) return;
+
       const tradeTime = tick.last_trade_time ? new Date(tick.last_trade_time) : new Date();
       let t: UTCTimestamp;
       if (!isIntraday) {
         t = tradeTime.toISOString().slice(0, 10) as unknown as UTCTimestamp;
       } else {
         const ms = intervalMins * 60 * 1000;
-        t = (Math.floor(tradeTime.getTime() / ms) * ms / 1000) as UTCTimestamp;
+        // Apply IST offset so chart x-axis shows IST times (same shift as toTime)
+        const rawSecs = Math.floor(tradeTime.getTime() / ms) * ms / 1000;
+        t = (rawSecs + IST_OFFSET_SECS) as UTCTimestamp;
       }
+
+      // Determine per-candle OHLC (track state in ref so open/high/low are correct)
+      let open = tick.ltp, high = tick.ltp, low = tick.ltp;
+      if (isIntraday) {
+        const cur = currentCandleRef.current;
+        if (cur && cur.time === t) {
+          // Same candle slot — keep open, expand range
+          open = cur.open;
+          high = Math.max(cur.high, tick.ltp);
+          low  = Math.min(cur.low,  tick.ltp);
+        }
+        currentCandleRef.current = { time: t, open, high, low };
+      }
+
       try {
-        seriesRef.current.update({ time: t, open: tick.open, high: tick.high, low: tick.low, close: tick.ltp });
+        const isOHLC = chartTypeRef.current === "candle" || chartTypeRef.current === "bar";
+        if (isOHLC) {
+          seriesRef.current.update({ time: t, open, high, low, close: tick.ltp });
+        } else {
+          // Line / Area series expect { time, value }
+          (seriesRef.current as unknown as { update: (d: { time: UTCTimestamp; value: number }) => void })
+            .update({ time: t, value: tick.ltp });
+        }
       } catch {
         // series may have been removed during chart rebuild
       }

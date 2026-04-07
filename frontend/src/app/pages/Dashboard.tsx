@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import {
-  Bell,
   ChevronDown,
   ChevronUp,
   ChevronsUpDown,
@@ -12,6 +11,12 @@ import {
   RefreshCw,
   Filter,
   GripVertical,
+  TrendingUp,
+  ShoppingCart,
+  DollarSign,
+  Bell,
+  Zap,
+  Star,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { Holding } from "../data/mockData";
@@ -30,6 +35,7 @@ import { getColumns, getPreferences, savePreferences } from "../api/preferences"
 import { visibleHoldingsColumns, holdingsSort } from "../data/localPrefs";
 import { ApiError } from "../api/client";
 import AlertFormModal from "../components/AlertFormModal";
+import { addToWatchlist } from "../api/watchlist";
 import type { AlertOut } from "../api/types";
 import type { ColumnDefinition, ColFilterType } from "../api/types";
 
@@ -114,6 +120,24 @@ export default function Dashboard() {
     symbol: string; exchange: string; token: number; ltp: number;
   } | null>(null);
 
+  // Right-click context menu
+  type CtxMenu = {
+    x: number; y: number;
+    symbol: string; exchange: string; token: number; ltp: number;
+    heldQty?: number;               // holdings only — pre-fill sell qty
+    sqOff?: { qty: number; txType: string; product: string }; // positions only
+  };
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+
+  const openCtx = (e: React.MouseEvent, info: Omit<CtxMenu, "x" | "y">) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuW = 200, menuH = 240;
+    const x = e.clientX + menuW > window.innerWidth  ? e.clientX - menuW : e.clientX + 4;
+    const y = e.clientY + menuH > window.innerHeight ? e.clientY - menuH : e.clientY + 4;
+    setCtxMenu({ x, y, ...info });
+  };
+
   const savedSort = holdingsSort.get();
   const [sortKey, setSortKey] = useState<SortKey>((savedSort.column as SortKey) || "symbol");
   const [sortDir, setSortDir] = useState<SortDir>(savedSort.direction);
@@ -174,6 +198,19 @@ export default function Dashboard() {
     }
   }, [filterPopover]);
 
+  // Close context menu on outside click or Escape
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onDown = () => setCtxMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCtxMenu(null); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [ctxMenu]);
+
   // Zustand store
   const storeHoldings = useAppStore((s) => s.holdings);
   const storePositions = useAppStore((s) => s.positions);
@@ -183,6 +220,9 @@ export default function Dashboard() {
   const setStoreHoldings = useAppStore((s) => s.setHoldings);
   const setStorePositions = useAppStore((s) => s.setPositions);
   const setStoreMargins = useAppStore((s) => s.setMargins);
+  const watchlistData = useAppStore((s) => s.watchlists.data);
+  const activeWatchlistId = useAppStore((s) => s.activeWatchlistId);
+  const setWatchlists = useAppStore((s) => s.setWatchlists);
 
   const holdings: Holding[] = storeHoldings.data ?? [];
   const positions = storePositions.data ?? [];
@@ -225,6 +265,25 @@ export default function Dashboard() {
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setLivePrices]);
+  // Add symbol to active watchlist
+  const handleAddToWatchlist = useCallback(async (info: { symbol: string; exchange: string; token: number }) => {
+    if (!activeWatchlistId) { toast.error("No active watchlist"); return; }
+    try {
+      const item = await addToWatchlist(activeWatchlistId, {
+        instrument_token: info.token,
+        tradingsymbol: info.symbol,
+        exchange: info.exchange,
+      });
+      const updated = watchlistData?.map((w) =>
+        w.id === activeWatchlistId ? { ...w, items: [...w.items, item] } : w
+      );
+      if (updated) setWatchlists(updated);
+      toast.success(`${info.symbol} added to watchlist`);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to add to watchlist");
+    }
+  }, [activeWatchlistId, watchlistData, setWatchlists]);
+
   // ──────────────────────────────────────────────────────────────────────────
 
   const fetchData = async () => {
@@ -765,8 +824,18 @@ export default function Dashboard() {
             {filteredAndSorted.map((holding) => (
               <tr
                 key={holding.symbol}
-                className="group border-b border-[#1a1a1a] hover:bg-[#141414] cursor-pointer transition-colors"
+                className="border-b border-[#1a1a1a] hover:bg-[#141414] cursor-pointer transition-colors"
                 onClick={() => navigate(`/charts/${holding.symbol}`)}
+                onContextMenu={(e) => {
+                  const tick = holding.instrumentToken != null ? livePrices[holding.instrumentToken] : undefined;
+                  openCtx(e, {
+                    symbol: holding.symbol,
+                    exchange: holding.exchange,
+                    token: holding.instrumentToken ?? 0,
+                    ltp: tick?.ltp ?? holding.ltp,
+                    heldQty: holding.quantity + holding.t1Quantity,
+                  });
+                }}
               >
                 <td className="px-4 py-2">
                   <div className="font-medium text-xs">{holding.symbol}</div>
@@ -859,32 +928,12 @@ export default function Dashboard() {
                     </td>
                   );
                 })}
-                {/* Bell icon — set alert for this holding */}
-                <td className="px-2 py-2 w-8">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const tick = holding.instrumentToken != null ? livePrices[holding.instrumentToken] : undefined;
-                      setAlertTarget({
-                        symbol: holding.symbol,
-                        exchange: holding.exchange,
-                        token: holding.instrumentToken ?? 0,
-                        ltp: tick?.ltp ?? holding.ltp,
-                      });
-                      setAlertModalOpen(true);
-                    }}
-                    className="p-1 rounded hover:bg-[#2a2a2a] text-muted-foreground hover:text-[#FF6600] transition-colors opacity-0 group-hover:opacity-100"
-                    title={`Set alert for ${holding.symbol}`}
-                  >
-                    <Bell className="w-3.5 h-3.5" />
-                  </button>
-                </td>
               </tr>
             ))}
             {filteredAndSorted.length === 0 && (
               <tr>
                 <td
-                  colSpan={visibleCols.length + visibleUserKpis.length + 1}
+                  colSpan={visibleCols.length + visibleUserKpis.length}
                   className="px-4 py-12 text-center text-muted-foreground"
                 >
                   No holdings match the current filter.
@@ -932,7 +981,6 @@ export default function Dashboard() {
                     <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">LTP</th>
                     <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">Unrealised P&L</th>
                     <th className="px-4 py-1 text-right text-muted-foreground font-medium text-xs">M2M P&L</th>
-                    <th className="px-4 py-1 text-center text-muted-foreground font-medium text-xs">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -945,10 +993,25 @@ export default function Dashboard() {
                     const posM2mPnl = posTick != null && pos.quantity !== 0
                       ? (posTick.ltp - posTick.close) * pos.quantity
                       : pos.m2mPnl;
-                    const sqOffTx = pos.quantity > 0 ? "SELL" : "BUY";
-                    const sqOffQty = Math.abs(pos.quantity);
                     return (
-                      <tr key={`${pos.symbol}-${pos.product}`} className="border-b border-[#1a1a1a] hover:bg-[#141414] transition-colors">
+                      <tr
+                    key={`${pos.symbol}-${pos.product}`}
+                    className="border-b border-[#1a1a1a] hover:bg-[#141414] transition-colors"
+                    onContextMenu={(e) => {
+                      const posTick = pos.instrumentToken != null ? livePrices[pos.instrumentToken] : undefined;
+                      openCtx(e, {
+                        symbol: pos.symbol,
+                        exchange: pos.exchange,
+                        token: pos.instrumentToken ?? 0,
+                        ltp: posTick?.ltp ?? pos.ltp,
+                        sqOff: {
+                          qty: Math.abs(pos.quantity),
+                          txType: pos.quantity > 0 ? "SELL" : "BUY",
+                          product: pos.product,
+                        },
+                      });
+                    }}
+                  >
                         <td className="px-4 py-2.5">
                           <div className="font-medium text-xs">{pos.symbol}</div>
                           <div className="text-xs text-muted-foreground">{pos.exchange}</div>
@@ -968,19 +1031,6 @@ export default function Dashboard() {
                         </td>
                       <td className={`px-4 py-2.5 text-right text-xs ${posM2mPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
                           {posM2mPnl >= 0 ? "+" : ""}₹{posM2mPnl.toFixed(2)}
-                        </td>
-                      <td className="px-4 py-2.5 text-center">
-                          {sqOffQty > 0 && (
-                            <button
-                              onClick={() => navigate(
-                                `/orders?squareOff=1&symbol=${encodeURIComponent(pos.symbol)}&exchange=${encodeURIComponent(pos.exchange)}&product=${encodeURIComponent(pos.product)}&txType=${sqOffTx}&quantity=${sqOffQty}&orderType=MARKET`
-                              )}
-                              className="text-xs px-2 py-0.5 rounded border border-red-500/50 text-red-400 hover:bg-red-500/10 transition-colors"
-                              title="Square off this position at market price"
-                            >
-                              Square Off
-                            </button>
-                          )}
                         </td>
                       </tr>
                     );
@@ -1006,6 +1056,82 @@ export default function Dashboard() {
           instrumentToken={alertTarget.token}
           ltp={alertTarget.ltp}
         />
+      )}
+
+      {/* Right-click context menu */}
+      {ctxMenu && (
+        <div
+          className="fixed z-[200] bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg shadow-2xl py-1 min-w-[190px] text-sm"
+          style={{ top: ctxMenu.y, left: ctxMenu.x }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          {/* Symbol header */}
+          <div className="px-3 py-1.5 text-xs text-muted-foreground border-b border-[#2a2a2a] mb-1">
+            <span className="font-semibold text-foreground">{ctxMenu.symbol}</span>
+            <span className="ml-1.5">· {ctxMenu.exchange} · ₹{ctxMenu.ltp.toFixed(2)}</span>
+          </div>
+
+          {/* Primary actions */}
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[#2a2a2a] text-left transition-colors"
+            onClick={() => { navigate(`/charts/${ctxMenu.symbol}`); setCtxMenu(null); }}
+          >
+            <TrendingUp className="w-3.5 h-3.5 text-muted-foreground" /> Open Chart
+          </button>
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[#2a2a2a] text-left transition-colors text-green-400"
+            onClick={() => {
+              navigate(`/orders?symbol=${encodeURIComponent(ctxMenu.symbol)}&exchange=${encodeURIComponent(ctxMenu.exchange)}&txType=BUY&price=${ctxMenu.ltp}&orderType=LIMIT`);
+              setCtxMenu(null);
+            }}
+          >
+            <ShoppingCart className="w-3.5 h-3.5" /> Buy
+          </button>
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[#2a2a2a] text-left transition-colors text-red-400"
+            onClick={() => {
+              const qty = ctxMenu.heldQty ?? 1;
+              navigate(`/orders?symbol=${encodeURIComponent(ctxMenu.symbol)}&exchange=${encodeURIComponent(ctxMenu.exchange)}&txType=SELL&price=${ctxMenu.ltp}&orderType=LIMIT${qty ? `&quantity=${qty}` : ""}`);
+              setCtxMenu(null);
+            }}
+          >
+            <DollarSign className="w-3.5 h-3.5" />
+            {ctxMenu.sqOff ? "Square Off" : "Sell"}
+          </button>
+
+          <div className="border-t border-[#2a2a2a] my-1" />
+
+          {/* Secondary actions */}
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[#2a2a2a] text-left transition-colors"
+            onClick={() => {
+              setAlertTarget({ symbol: ctxMenu.symbol, exchange: ctxMenu.exchange, token: ctxMenu.token, ltp: ctxMenu.ltp });
+              setAlertModalOpen(true);
+              setCtxMenu(null);
+            }}
+          >
+            <Bell className="w-3.5 h-3.5 text-muted-foreground" /> Set Alert
+          </button>
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[#2a2a2a] text-left transition-colors"
+            onClick={() => {
+              navigate(`/orders?tab=gtt&symbol=${encodeURIComponent(ctxMenu.symbol)}&exchange=${encodeURIComponent(ctxMenu.exchange)}&price=${ctxMenu.ltp}`);
+              setCtxMenu(null);
+            }}
+          >
+            <Zap className="w-3.5 h-3.5 text-muted-foreground" /> Set GTT
+          </button>
+          <button
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[#2a2a2a] text-left transition-colors"
+            onClick={() => {
+              void handleAddToWatchlist({ symbol: ctxMenu.symbol, exchange: ctxMenu.exchange, token: ctxMenu.token });
+              setCtxMenu(null);
+            }}
+          >
+            <Star className="w-3.5 h-3.5 text-muted-foreground" /> Add to Watchlist
+          </button>
+        </div>
       )}
     </div>
   );

@@ -283,6 +283,20 @@ export default function Orders() {
       const next = new URLSearchParams(searchParams);
       ["squareOff", "symbol", "exchange", "product", "txType", "quantity", "orderType"].forEach((k) => next.delete(k));
       setSearchParams(next, { replace: true });
+    } else if (searchParams.get("tab") === "gtt") {
+      // Dashboard right-click "Set GTT": ?tab=gtt&symbol=X&exchange=Y&price=P
+      setTab("gtt");
+      const symbol = searchParams.get("symbol") ?? "";
+      const exchange = searchParams.get("exchange") ?? "NSE";
+      const price = searchParams.get("price") ?? "";
+      if (symbol) {
+        setGttForm({ ...EMPTY_GTT, symbol });
+        setGttExchange(exchange);
+        setGttLastPrice(parseFloat(price) || 0);
+      }
+      const next = new URLSearchParams(searchParams);
+      ["tab", "symbol", "exchange", "price"].forEach((k) => next.delete(k));
+      setSearchParams(next, { replace: true });
     } else if (searchParams.get("symbol")) {
       // Chart right-click pre-fill: ?symbol=X&exchange=Y&txType=BUY&price=P&orderType=LIMIT
       const symbol = searchParams.get("symbol") ?? "";

@@ -31,6 +31,17 @@ import { useQuotesSocket } from "../api/quotes";
 import WatchlistPanel from "./WatchlistPanel";
 import AlertBell from "./AlertBell";
 
+function getISTStatus(): { isOpen: boolean; timeStr: string } {
+  const now = new Date();
+  // Construct IST time via locale string to avoid DST issues
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const day = ist.getDay(); // 0=Sun, 6=Sat
+  const mins = ist.getHours() * 60 + ist.getMinutes();
+  const isOpen = day >= 1 && day <= 5 && mins >= 9 * 60 + 15 && mins < 15 * 60 + 30;
+  const timeStr = ist.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return { isOpen, timeStr };
+}
+
 function getInitials(name: string): string {
   return name
     .split(" ")
@@ -45,6 +56,7 @@ export default function AppShell() {
   const [sidebarPinned, setSidebarPinned] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [watchlistOpen, setWatchlistOpen] = useState(false);
+  const [marketStatus, setMarketStatus] = useState(getISTStatus);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -58,6 +70,12 @@ export default function AppShell() {
   // First watchlist for topbar ticker (or fall back to holdings)
   const firstWatchlist = watchlistData?.find((w) => w.id === activeWatchlistId) ?? watchlistData?.[0];
   const tickerItems = firstWatchlist?.items.slice(0, 3) ?? [];
+
+  // Update IST market status every 30 s
+  useEffect(() => {
+    const id = setInterval(() => setMarketStatus(getISTStatus()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Start single shared WebSocket connection for the whole app
   useQuotesSocket();
@@ -89,7 +107,7 @@ export default function AppShell() {
       })
     : "—";
 
-  const isMarketOpen = true;
+  const { isOpen: isMarketOpen, timeStr: istTime } = marketStatus;
 
   const navItems = [
     { path: "/dashboard", label: "Dashboard", icon: LayoutGrid },
@@ -151,7 +169,7 @@ export default function AppShell() {
               <span className="text-sm text-muted-foreground">
                 {isMarketOpen ? "MARKET OPEN" : "MARKET CLOSED"}
               </span>
-              <span className="text-sm text-muted-foreground">09:15 – 15:30 IST</span>
+              <span className="text-sm text-muted-foreground">{istTime} IST</span>
             </div>
           </div>
 
