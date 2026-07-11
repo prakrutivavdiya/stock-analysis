@@ -26,6 +26,13 @@ log = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
 _scheduler = AsyncIOScheduler(timezone=IST)
 
+# ── Rate-limit / chunking knobs ──────────────────────────────────────────────
+# Kite REST limits: historical_data ≈ 3 req/s. Stay well under to avoid the
+# "Too many requests" (429) error. Pace per call + take a breather per chunk.
+_HIST_MIN_INTERVAL = 0.4   # seconds to wait after each Kite historical_data call
+_CHUNK_SIZE = 25           # instruments processed before a short breather
+_CHUNK_PAUSE = 1.0         # seconds to pause between chunks
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job: reload instruments dump from Kite
@@ -72,6 +79,7 @@ async def _job_fetch_d1_ohlcv() -> None:
                 continue
 
             tokens_seen: set[int] = set()
+            processed = 0
             for h in holdings:
                 token = h.get("instrument_token")
                 symbol = h.get("tradingsymbol", "")
@@ -79,6 +87,12 @@ async def _job_fetch_d1_ohlcv() -> None:
                 if not token or token in tokens_seen:
                     continue
                 tokens_seen.add(token)
+
+                # Chunk breather: pause every _CHUNK_SIZE instruments to avoid overload.
+                processed += 1
+                if processed > 1 and processed % _CHUNK_SIZE == 1:
+                    await db.commit()          # flush the chunk before pausing
+                    await asyncio.sleep(_CHUNK_PAUSE)
 
                 # Skip if already cached for D-1
                 existing = await db.execute(
@@ -97,6 +111,7 @@ async def _job_fetch_d1_ohlcv() -> None:
                     candles = await asyncio.to_thread(
                         kc.historical_data, token, from_dt, to_dt, "day"
                     )
+                    await asyncio.sleep(_HIST_MIN_INTERVAL)  # pace under Kite's 3 req/s
                     from backend.data_source import set_ohlcv_source
                     set_ohlcv_source("kite")
                 except Exception as exc:
@@ -148,9 +163,10 @@ async def _job_refresh_fundamentals() -> None:
     Refresh P/E, EPS, 52W data from NSE India for all instruments in any user's holdings.
     Runs every Sunday at 08:00 IST (PRD §5.10).
     """
-    from backend.routers.fundamentals import _fetch_nse_fundamental
+    from backend.routers.fundamentals import _fetch_nse_fundamental, _fetch_yf_fundamental
 
     log.info("Scheduler: starting fundamental data refresh")
+    written = 0
 
     async with AsyncSessionLocal() as db:
         users = (await db.execute(
@@ -180,8 +196,16 @@ async def _job_refresh_fundamentals() -> None:
                     continue
                 symbols_seen.add(symbol)
 
+                # Chunk breather + per-symbol pacing to stay polite to NSE/Yahoo.
+                if len(symbols_seen) > 1 and len(symbols_seen) % _CHUNK_SIZE == 1:
+                    await db.commit()
+                    await asyncio.sleep(_CHUNK_PAUSE)
+
                 try:
+                    # NSE blocks scraping from many IPs (403) — fall back to Yahoo.
                     data = await _fetch_nse_fundamental(symbol)
+                    if not data:
+                        data = await _fetch_yf_fundamental(symbol, exchange)
                     if data:
                         row = await db.get(FundamentalCache, token)
                         if row is None:
@@ -196,12 +220,16 @@ async def _job_refresh_fundamentals() -> None:
                         row.week_52_high = data.get("week_52_high")
                         row.week_52_low = data.get("week_52_low")
                         row.data_date = data.get("data_date")
+                        written += 1
                 except Exception as exc:
                     log.warning("Fundamental refresh failed for %s: %s", symbol, exc)
 
         await db.commit()
 
-    log.info("Scheduler: fundamental refresh complete — %d symbols", len(symbols_seen))
+    log.info(
+        "Scheduler: fundamental refresh complete — %d/%d symbols written",
+        written, len(symbols_seen),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -260,6 +288,14 @@ async def _job_recompute_kpis() -> None:
             if not kpis:
                 continue
 
+            # Snapshot the fields we need into plain tuples BEFORE the loop.
+            # _load_ohlcv_df / _load_fundamental may call db.rollback() on this
+            # shared session, which expires every ORM object in the identity map
+            # (expire_on_commit=False does NOT cover rollback). Touching an
+            # expired kpi.* attribute afterwards triggers an implicit lazy load,
+            # which is illegal under the async engine → MissingGreenlet.
+            kpi_defs = [(k.name, k.formula, k.return_type) for k in kpis]
+
             today = _prev_trading_day()
 
             for h in holdings:
@@ -278,17 +314,54 @@ async def _job_recompute_kpis() -> None:
                     log.warning("KPI scheduler: OHLCV/fundamental load failed for %s: %s", symbol, exc)
                     continue
 
-                for kpi in kpis:
+                for kpi_name, kpi_formula, kpi_return_type in kpi_defs:
                     try:
-                        evaluate_formula(kpi.formula, df, fundamental, kpi.return_type)
+                        evaluate_formula(kpi_formula, df, fundamental, kpi_return_type)
                         total_evals += 1
                     except Exception as exc:
                         log.warning(
                             "KPI scheduler: formula error — KPI=%r symbol=%r: %s",
-                            kpi.name, symbol, exc,
+                            kpi_name, symbol, exc,
                         )
 
     log.info("Scheduler: KPI pre-warm complete — %d evaluations", total_evals)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestrator: run all three data-refresh jobs to get fully fresh data
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def refresh_all_data() -> None:
+    """
+    Run the three data-refresh jobs back-to-back so every cache is fresh.
+
+    Order matters — it is a dependency chain, NOT a fan-out:
+      1. D-1 OHLCV     → warms ohlcv_cache
+      2. Fundamentals  → warms fundamental_cache
+      3. KPI recompute → reads the two warm caches (mostly DB, few Kite calls)
+
+    Run SEQUENTIALLY on purpose. Do NOT asyncio.gather() these: each job opens
+    its own AsyncSession, and a single AsyncSession/asyncpg connection cannot be
+    driven by two coroutines at once — that is what raises
+    `MissingGreenlet: greenlet_spawn has not been called`. Chunking/pacing inside
+    each job (see _CHUNK_SIZE / _HIST_MIN_INTERVAL) is what prevents Kite 429s;
+    concurrency is not needed and would only trade a rate-limit error for a
+    greenlet error.
+
+    Safe to trigger manually (e.g. from an admin endpoint) or on demand.
+    """
+    log.info("Scheduler: full data refresh started")
+    for name, job in (
+        ("D-1 OHLCV", _job_fetch_d1_ohlcv),
+        ("fundamentals", _job_refresh_fundamentals),
+        ("KPI recompute", _job_recompute_kpis),
+    ):
+        try:
+            await job()
+        except Exception:
+            # One job failing must not abort the rest — log and continue.
+            log.exception("Scheduler: %s job failed during full refresh", name)
+    log.info("Scheduler: full data refresh complete")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -68,7 +68,6 @@
 
 **Acceptance Criteria:**
 - Displayed metrics: Total Invested, Current Market Value, Overall P&L (₹ and %), Available Margin
-- XIRR is computed and displayed when purchase date data is available
 - Metrics update whenever holdings data refreshes
 
 ---

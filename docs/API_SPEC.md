@@ -221,12 +221,9 @@ Aggregated view: holdings summary + margin in one call.
   "available_margin": 4486.60,
   "holdings_count": 18,
   "profitable_count": 10,
-  "loss_count": 8,
-  "xirr": 12.4
+  "loss_count": 8
 }
 ```
-
-`xirr`: annualised return computed from `audit_logs` buy entries for current holdings. `null` when no purchase history exists in StockPilot's audit log (e.g., pre-existing holdings not placed through the platform).
 
 ---
 

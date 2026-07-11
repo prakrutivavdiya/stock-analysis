@@ -8,14 +8,10 @@ Tests for /api/v1/portfolio endpoints.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from tests.conftest import USER_ID, seed_audit, seed_user
 
 
 def _raw_holding(symbol: str = "INFY", qty: int = 10, avg: float = 1500.0, ltp: float = 1600.0):
@@ -142,10 +138,10 @@ async def test_margins_returns_equity_margin(
 # GET /portfolio/summary
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_summary_without_audit_logs(
+async def test_summary_returns_aggregates(
     client: AsyncClient, mock_kite: MagicMock
 ) -> None:
-    """Summary with no BUY audit entries returns xirr=None."""
+    """Summary returns aggregated invested/current/margin fields."""
     mock_kite.holdings.return_value = [_raw_holding()]
     mock_kite.margins.return_value = _raw_margins()
 
@@ -155,36 +151,7 @@ async def test_summary_without_audit_logs(
     body = response.json()
     assert "total_invested" in body
     assert "available_margin" in body
-    assert body["xirr"] is None  # no BUY entries
-
-
-async def test_summary_with_buy_audit_logs(
-    client: AsyncClient,
-    mock_kite: MagicMock,
-    db_session: AsyncSession,
-) -> None:
-    """Summary computes a numeric XIRR when BUY audit entries exist."""
-    await seed_user(db_session)
-    # Seed a BUY audit log for INFY
-    log = await seed_audit(
-        db_session,
-        action_type="PLACE_ORDER",
-        tradingsymbol="INFY",
-        outcome="SUCCESS",
-    )
-    log.order_params = {"transaction_type": "BUY", "quantity": 10, "price": 1500.0}
-    log.created_at = datetime.now(timezone.utc) - timedelta(days=90)
-    await db_session.commit()
-
-    mock_kite.holdings.return_value = [_raw_holding("INFY", 10, 1500.0, 1600.0)]
-    mock_kite.margins.return_value = _raw_margins()
-
-    response = await client.get("/api/v1/portfolio/summary")
-
-    assert response.status_code == 200
-    body = response.json()
-    # XIRR may be None if pyxirr raises; just assert it's numeric or None
-    assert body["xirr"] is None or isinstance(body["xirr"], float)
+    assert "xirr" not in body
 
 
 async def test_summary_kite_error_returns_502(

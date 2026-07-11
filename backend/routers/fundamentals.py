@@ -51,9 +51,47 @@ _NSE_HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/",
+    "Referer": "https://www.nseindia.com/get-quotes/equity",
     "Connection": "keep-alive",
+    # NSE's anti-bot (Akamai) checks these; without them the API returns 403.
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
 }
+
+
+async def _fetch_yf_fundamental(tradingsymbol: str, exchange: str = "NSE") -> dict[str, Any] | None:
+    """
+    Yahoo Finance fallback for fundamentals, used when NSE returns 403/blocks us.
+    Returns the same dict shape as `_fetch_nse_fundamental`, or None.
+    """
+    try:
+        import yfinance as yf
+
+        from backend.routers.historical import _yf_symbol
+        info = await asyncio.to_thread(lambda: yf.Ticker(_yf_symbol(tradingsymbol, exchange)).info)
+    except Exception:
+        return None
+
+    pe = info.get("trailingPE")
+    eps = info.get("trailingEps")
+    w52h = info.get("fiftyTwoWeekHigh")
+    w52l = info.get("fiftyTwoWeekLow")
+    bv = info.get("bookValue")
+    if not any(v is not None for v in (pe, eps, w52h, w52l)):
+        return None
+    return {
+        "pe_ratio": float(pe) if pe else None,
+        "eps": float(eps) if eps else None,
+        "book_value": float(bv) if bv else None,
+        "face_value": None,
+        "week_52_high": float(w52h) if w52h else None,
+        "week_52_low": float(w52l) if w52l else None,
+        "data_date": date.today(),
+    }
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
@@ -67,9 +105,12 @@ async def _fetch_nse_fundamental(symbol: str) -> dict[str, Any] | None:
     week_52_high, week_52_low, data_date, or None on failure.
     """
     async with httpx.AsyncClient(headers=_NSE_HEADERS, follow_redirects=True, timeout=15.0) as client:
-        # Step 1: visit homepage to obtain session cookies
+        # Step 1: visit homepage, then the symbol's quote page, to obtain the
+        # Akamai session cookies the API requires (a bare homepage hit is often
+        # not enough — the /get-quotes path sets the per-symbol cookie).
         try:
             await client.get(_NSE_BASE)
+            await client.get(f"{_NSE_BASE}/get-quotes/equity", params={"symbol": symbol})
         except Exception:
             pass  # proceed without cookies as fallback
 

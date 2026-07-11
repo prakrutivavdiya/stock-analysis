@@ -224,7 +224,7 @@ User holds LT (bought at ₹3,433, current ₹4,298)
 | PD-01 | Display all holdings with quantity, avg price, LTP, P&L, day change, and user-defined KPI columns |
 | PD-02 | Display current intraday positions |
 | PD-03 | Display available margin (equity) |
-| PD-04 | Show portfolio-level metrics: total invested, current value, overall P&L%, XIRR |
+| PD-04 | Show portfolio-level metrics: total invested, current value, overall P&L% |
 | PD-05 | Holdings table is sortable by any column; columns are individually addable or removable by the user |
 | PD-06 | Colour-coded gain/loss indicators |
 | PD-07 | Holdings data auto-refreshes at a configurable interval and on manual refresh |

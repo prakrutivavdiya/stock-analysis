@@ -76,7 +76,6 @@ vi.mock('../../app/api/portfolio', () => ({
   getHoldings: vi.fn(() => Promise.resolve({ holdings: [] })),
   getPositions: vi.fn(() => Promise.resolve({ positions: [] })),
   getMargins: vi.fn(() => Promise.resolve({})),
-  getPortfolioSummary: vi.fn(() => Promise.resolve({ xirr: 0 })),
   mapHolding: vi.fn((h: Holding) => h),
   mapPosition: vi.fn((p: Position) => p),
   mapMargins: vi.fn(() => null),

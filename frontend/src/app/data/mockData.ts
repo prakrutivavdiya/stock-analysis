@@ -111,9 +111,6 @@ export const mockMargin: Margin = {
   total: 100000,
 };
 
-// Mock XIRR — null when no purchase history in StockPilot (PD-04, API_SPEC)
-export const mockXirr: number | null = 18.4;
-
 export const mockHoldings: Holding[] = [
   {
     symbol: "ABSLAMC",

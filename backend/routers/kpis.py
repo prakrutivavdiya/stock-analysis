@@ -53,9 +53,9 @@ async def _load_fundamental(
     if fund_row is None and tradingsymbol:
         try:
             import yfinance as yf
-            suffix = ".BO" if exchange.upper() == "BSE" else ".NS"
+            from backend.routers.historical import _yf_symbol
             info = await asyncio.to_thread(
-                lambda: yf.Ticker(f"{tradingsymbol}{suffix}").info
+                lambda: yf.Ticker(_yf_symbol(tradingsymbol, exchange)).info
             )
             pe = info.get("trailingPE")
             eps = info.get("trailingEps")
@@ -75,13 +75,15 @@ async def _load_fundamental(
                     week_52_low=float(w52l) if w52l else None,
                     data_date=_date.today(),
                 )
-                db.add(row)
                 try:
+                    # Savepoint isolates this write; a failure won't expire the
+                    # caller's ORM objects (would otherwise cause MissingGreenlet).
+                    async with db.begin_nested():
+                        db.add(row)
                     await db.commit()
-                    await db.refresh(row)
                     fund_row = row
                 except Exception:
-                    await db.rollback()
+                    pass
         except Exception:
             pass
 
@@ -150,7 +152,14 @@ async def _load_ohlcv_df(
     # Track tradingsymbol for LTP patching (resolved from cache or caller)
     cached_tradingsymbol: str | None = None
 
-    if not rows:
+    # The D-1 scheduler adds one candle per day, so the DB may have far fewer rows
+    # than the full 400-day lookback window.  SMA(200) needs ≥200 bars; using 250
+    # as the threshold gives a comfortable buffer.  When insufficient, fetch the full
+    # window from Kite (inserting only candles not already in the DB to avoid duplicates).
+    _existing_ts = {r.candle_timestamp for r in rows}
+    _ROWS_NEEDED = 250  # well above the SMA(200) 200-bar requirement
+
+    if not rows or len(rows) < _ROWS_NEEDED:
         # ── Try Kite historical API ───────────────────────────────────────────
         raw_kite: list | None = None
         try:
@@ -189,21 +198,26 @@ async def _load_ohlcv_df(
             set_ohlcv_source("kite")
             symbol = tradingsymbol or str(instrument_token)
             cached_tradingsymbol = symbol
-            for c in raw_kite:
-                ts = c["date"]
-                if isinstance(ts, datetime) and ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                db.add(OHLCVCache(
-                    instrument_token=instrument_token, tradingsymbol=symbol,
-                    exchange=exchange, interval=interval,
-                    candle_timestamp=ts,
-                    open=c["open"], high=c["high"], low=c["low"],
-                    close=c["close"], volume=c["volume"],
-                ))
             try:
+                # Savepoint isolates these inserts; a failure won't expire the
+                # caller's ORM objects (would otherwise cause MissingGreenlet).
+                async with db.begin_nested():
+                    for c in raw_kite:
+                        ts = c["date"]
+                        if isinstance(ts, datetime) and ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if ts in _existing_ts:
+                            continue  # already stored by the D-1 scheduler — skip to avoid duplicates
+                        db.add(OHLCVCache(
+                            instrument_token=instrument_token, tradingsymbol=symbol,
+                            exchange=exchange, interval=interval,
+                            candle_timestamp=ts,
+                            open=c["open"], high=c["high"], low=c["low"],
+                            close=c["close"], volume=c["volume"],
+                        ))
                 await db.commit()
             except Exception:
-                await db.rollback()
+                pass
             using_live = False  # just fetched from Kite; no LTP patch needed
             df = pd.DataFrame([
                 {"timestamp": c["date"], "open": c["open"], "high": c["high"],

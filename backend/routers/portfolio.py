@@ -4,21 +4,15 @@ Portfolio router — 4 endpoints
   GET /portfolio/holdings   → live holdings from Kite + computed P&L
   GET /portfolio/positions  → live intraday positions from Kite
   GET /portfolio/margins    → equity margin from Kite
-  GET /portfolio/summary    → aggregated view + XIRR
+  GET /portfolio/summary    → aggregated view
 """
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
-
-# IST offset for date calculations
-_IST = timezone(timedelta(hours=5, minutes=30))
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import and_, select
 
-from backend.deps import CurrentUser, DBSession, KiteClient
-from backend.models import AuditLog
+from backend.deps import KiteClient
 from backend.schemas.portfolio import (
     EquityMargin,
     Holding,
@@ -154,10 +148,8 @@ async def get_margins(kite: KiteClient) -> MarginsResponse:
 @router.get("/summary", response_model=PortfolioSummary)
 async def get_summary(
     kite: KiteClient,
-    current_user: CurrentUser,
-    db: DBSession,
 ) -> PortfolioSummary:
-    """Holdings summary + available margin + XIRR from audit log."""
+    """Holdings summary + available margin."""
     try:
         holdings_raw, margins_raw = await asyncio.gather(
             asyncio.to_thread(kite.holdings),
@@ -168,7 +160,6 @@ async def get_summary(
 
     total_invested = total_current = 0.0
     profitable = loss_count = 0
-    held_symbols: set[str] = set()
 
     for h in holdings_raw:
         qty = h.get("quantity", 0) + h.get("t1_quantity", 0)
@@ -182,56 +173,12 @@ async def get_summary(
             profitable += 1
         else:
             loss_count += 1
-        held_symbols.add(h.get("tradingsymbol", ""))
 
     total_pnl = total_current - total_invested
     total_pnl_pct = (total_pnl / total_invested * 100) if total_invested else 0.0
 
     eq = margins_raw.get("equity", {}).get("available", {})
     available_margin = eq.get("cash", 0.0)
-
-    # XIRR from audit_logs BUY entries for current holdings
-    xirr_val: float | None = None
-    try:
-        result = await db.execute(
-            select(AuditLog).where(
-                and_(
-                    AuditLog.user_id == current_user.id,
-                    AuditLog.action_type == "PLACE_ORDER",
-                    AuditLog.outcome == "SUCCESS",
-                    AuditLog.tradingsymbol.in_(held_symbols),
-                )
-            )
-        )
-        buy_logs = result.scalars().all()
-        if buy_logs:
-            cashflows = []
-            cf_dates = []
-            for log_row in buy_logs:
-                params = log_row.order_params or {}
-                if params.get("transaction_type") == "BUY":
-                    qty = params.get("quantity", 0)
-                    price = params.get("average_price") or params.get("price") or 0.0
-                    amount = -(qty * price)  # outflow is negative
-                    if amount and log_row.created_at:
-                        cashflows.append(amount)
-                        ts = log_row.created_at
-                        if ts.tzinfo is None:
-                            ts = ts.replace(tzinfo=timezone.utc)
-                        cf_dates.append(ts.date())
-            if cashflows and total_current > 0:
-                # Terminal cash flow = current portfolio value (positive inflow)
-                # Use IST date to stay consistent with market dates
-                cashflows.append(total_current)
-                cf_dates.append(datetime.now(_IST).date())
-                from pyxirr import xirr as _xirr
-                xirr_val = _xirr(cf_dates, cashflows)
-                if xirr_val is not None:
-                    xirr_val = round(xirr_val * 100, 2)  # convert to %
-                else:
-                    xirr_val = None  # nonsensical result (e.g. e+207)
-    except Exception:
-        xirr_val = None  # XIRR is best-effort; never block the summary
 
     return PortfolioSummary(
         total_invested=round(total_invested, 2),
@@ -242,5 +189,4 @@ async def get_summary(
         holdings_count=len(holdings_raw),
         profitable_count=profitable,
         loss_count=loss_count,
-        xirr=xirr_val,
     )

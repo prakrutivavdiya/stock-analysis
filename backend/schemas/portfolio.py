@@ -71,4 +71,3 @@ class PortfolioSummary(BaseModel):
     holdings_count: int
     profitable_count: int
     loss_count: int
-    xirr: float | None

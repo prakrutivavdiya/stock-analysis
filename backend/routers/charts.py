@@ -10,8 +10,9 @@ Charts router — 5 endpoints
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
@@ -20,6 +21,8 @@ from sqlalchemy import and_, select
 from backend.deps import CurrentUser, DBSession, KiteClient
 from backend.models import ChartDrawing, OHLCVCache
 from backend.schemas.charts import ComputeRequest, DrawingCreate, DrawingOut, DrawingsResponse, DrawingUpdate, IndicatorsResponse
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -216,75 +219,69 @@ async def compute_indicators(
     from_dt = datetime(from_d.year, from_d.month, from_d.day, tzinfo=timezone.utc)
     to_dt   = datetime(to_d.year,   to_d.month,   to_d.day, 23, 59, 59, tzinfo=timezone.utc)
 
-    # ── Load OHLCV (from cache or Kite) ─────────────────────────────────────
-    rows = (await db.execute(
-        select(OHLCVCache)
-        .where(
-            OHLCVCache.instrument_token == instrument_token,
-            OHLCVCache.interval == interval,
-            OHLCVCache.candle_timestamp >= from_dt,
-            OHLCVCache.candle_timestamp <= to_dt,
+    # ── Load OHLCV (cache-first, backfilling missing history) ───────────────
+    # Indicators are computed server-side from ohlcv_cache. If the cache covers
+    # only part of the requested range, the overlays/oscillators would render
+    # over just that part and leave the rest of the chart bare. So before
+    # computing, backfill any older history the cache is missing.
+    from backend.routers.historical import _fetch_and_cache
+
+    async def _load_rows() -> list[OHLCVCache]:
+        return (await db.execute(
+            select(OHLCVCache)
+            .where(
+                OHLCVCache.instrument_token == instrument_token,
+                OHLCVCache.interval == interval,
+                OHLCVCache.candle_timestamp >= from_dt,
+                OHLCVCache.candle_timestamp <= to_dt,
+            )
+            .order_by(OHLCVCache.candle_timestamp)
+        )).scalars().all()
+
+    rows = await _load_rows()
+
+    # Resolve tradingsymbol: query param > cached row > token string
+    sym = tradingsymbol or (rows[0].tradingsymbol if rows else "") or str(instrument_token)
+
+    # Backfill when the cache is empty, or when its earliest candle starts
+    # meaningfully after from_date (older history missing). The few-days slack
+    # absorbs weekends/holidays around the first requested candle.
+    earliest = rows[0].candle_timestamp.date() if rows else None
+    needs_backfill = (not rows) or (earliest > from_d + timedelta(days=7))
+
+    if needs_backfill:
+        # Fetch only the missing OLDER window [from_dt, gap_to] so we never
+        # overlap rows already cached — an overlap would trip a duplicate-key
+        # IntegrityError and roll the whole insert back.
+        gap_to = (
+            datetime(earliest.year, earliest.month, earliest.day, tzinfo=timezone.utc)
+            - timedelta(seconds=1)
+            if earliest else to_dt
         )
-        .order_by(OHLCVCache.candle_timestamp)
-    )).scalars().all()
+        try:
+            await _fetch_and_cache(
+                db, kite, instrument_token, sym, exchange, interval, from_dt, gap_to
+            )
+            rows = await _load_rows()
+        except Exception as exc:
+            # If we already have some candles, backfill is best-effort: render
+            # over what we have rather than failing. With an empty cache there's
+            # nothing to show, so surface the fetch error.
+            if not rows:
+                if isinstance(exc, HTTPException):
+                    raise
+                raise HTTPException(status_code=502, detail=f"Kite API error: {exc}") from exc
+            log.warning("Indicator OHLCV backfill failed for %s: %s", sym, exc)
 
     if not rows:
-        from backend.data_source import set_ohlcv_source
-        # Resolve tradingsymbol: query param > cached row > token string
-        sym = tradingsymbol or (rows[0].tradingsymbol if rows else "") or str(instrument_token)
-        exch = exchange
+        return {}
 
-        raw = None
-        try:
-            raw = await asyncio.to_thread(
-                kite.historical_data, instrument_token, from_dt, to_dt, interval
-            )
-            set_ohlcv_source("kite")
-        except Exception as kite_exc:
-            exc_str = str(kite_exc).lower()
-            if sym != str(instrument_token) and (
-                "permission" in exc_str or "403" in exc_str or "subscription" in exc_str
-            ):
-                try:
-                    from backend.routers.historical import _fetch_from_yfinance
-                    candles = await _fetch_from_yfinance(
-                        db, instrument_token, sym, exch, interval, from_dt, to_dt
-                    )
-                    # Re-query cache now populated by yfinance
-                    rows = (await db.execute(
-                        select(OHLCVCache)
-                        .where(
-                            OHLCVCache.instrument_token == instrument_token,
-                            OHLCVCache.interval == interval,
-                            OHLCVCache.candle_timestamp >= from_dt,
-                            OHLCVCache.candle_timestamp <= to_dt,
-                        )
-                        .order_by(OHLCVCache.candle_timestamp)
-                    )).scalars().all()
-                except Exception:
-                    raise HTTPException(status_code=502, detail=f"Kite API error: {kite_exc}") from kite_exc
-            else:
-                raise HTTPException(status_code=502, detail=f"Kite API error: {kite_exc}") from kite_exc
-
-        if raw:
-            df = pd.DataFrame(raw)
-            if not df.empty:
-                df.rename(columns={"date": "timestamp"}, inplace=True)
-        elif rows:
-            df = pd.DataFrame([
-                {"timestamp": r.candle_timestamp, "open": float(r.open), "high": float(r.high),
-                 "low": float(r.low), "close": float(r.close), "volume": r.volume}
-                for r in rows
-            ])
-        else:
-            return {}
-    else:
-        df = pd.DataFrame([
-            {"timestamp": r.candle_timestamp, "open": float(r.open),
-             "high": float(r.high), "low": float(r.low),
-             "close": float(r.close), "volume": r.volume}
-            for r in rows
-        ])
+    df = pd.DataFrame([
+        {"timestamp": r.candle_timestamp, "open": float(r.open),
+         "high": float(r.high), "low": float(r.low),
+         "close": float(r.close), "volume": r.volume}
+        for r in rows
+    ])
 
     if df.empty:
         return {}

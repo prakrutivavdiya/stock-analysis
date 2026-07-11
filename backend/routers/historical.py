@@ -39,6 +39,20 @@ _YF_INTERVAL_MAP = {
     "day": "1d",
 }
 
+# NSE trade-series suffixes (e.g. RELIANCE-BE) that Yahoo Finance does not use —
+# strip them before appending the .NS/.BO exchange suffix.
+_NSE_SERIES_SUFFIXES = ("-BE", "-BZ", "-BL", "-SM", "-IL", "-IT", "-GB", "-GS")
+
+
+def _yf_symbol(tradingsymbol: str, exchange: str) -> str:
+    """Map an NSE/BSE tradingsymbol to its Yahoo Finance ticker."""
+    sym = tradingsymbol.upper()
+    for suf in _NSE_SERIES_SUFFIXES:
+        if sym.endswith(suf):
+            sym = sym[: -len(suf)]
+            break
+    return f"{sym}{'.BO' if exchange.upper() == 'BSE' else '.NS'}"
+
 
 async def _fetch_from_yfinance(
     db: DBSession,
@@ -55,8 +69,7 @@ async def _fetch_from_yfinance(
 
     import yfinance as yf  # imported lazily — not needed for normal flow
 
-    suffix = ".NS" if exchange.upper() in ("NSE", "NFO") else ".BO"
-    yf_symbol = f"{tradingsymbol}{suffix}"
+    yf_symbol = _yf_symbol(tradingsymbol, exchange)
     yf_interval = _YF_INTERVAL_MAP.get(interval, "1d")
 
     def _download():
@@ -81,36 +94,39 @@ async def _fetch_from_yfinance(
         )
 
     candles: list[Candle] = []
-    for ts, row in df.iterrows():
-        dt: datetime = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else datetime.fromisoformat(str(ts))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-
-        db.add(OHLCVCache(
-            instrument_token=instrument_token,
-            tradingsymbol=tradingsymbol,
-            exchange=exchange,
-            interval=interval,
-            candle_timestamp=dt,
-            open=float(row["Open"]),
-            high=float(row["High"]),
-            low=float(row["Low"]),
-            close=float(row["Close"]),
-            volume=int(row.get("Volume", 0)),
-        ))
-        candles.append(Candle(
-            timestamp=dt,
-            open=float(row["Open"]),
-            high=float(row["High"]),
-            low=float(row["Low"]),
-            close=float(row["Close"]),
-            volume=int(row.get("Volume", 0)),
-        ))
-
     try:
+        # Savepoint: a duplicate-row IntegrityError rolls back only these inserts,
+        # never expiring ORM objects the caller still holds (avoids MissingGreenlet).
+        async with db.begin_nested():
+            for ts, row in df.iterrows():
+                dt: datetime = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else datetime.fromisoformat(str(ts))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+
+                db.add(OHLCVCache(
+                    instrument_token=instrument_token,
+                    tradingsymbol=tradingsymbol,
+                    exchange=exchange,
+                    interval=interval,
+                    candle_timestamp=dt,
+                    open=float(row["Open"]),
+                    high=float(row["High"]),
+                    low=float(row["Low"]),
+                    close=float(row["Close"]),
+                    volume=int(row.get("Volume", 0)),
+                ))
+                candles.append(Candle(
+                    timestamp=dt,
+                    open=float(row["Open"]),
+                    high=float(row["High"]),
+                    low=float(row["Low"]),
+                    close=float(row["Close"]),
+                    volume=int(row.get("Volume", 0)),
+                ))
         await db.commit()
     except IntegrityError:
-        await db.rollback()
+        # savepoint already reverted; candles were built in Python and are still returned
+        pass
 
     return candles
 

@@ -25,7 +25,6 @@ import {
   getHoldings,
   getPositions,
   getMargins,
-  getPortfolioSummary,
   mapHolding,
   mapPosition,
   mapMargins,
@@ -112,7 +111,6 @@ export default function Dashboard() {
   const [showFilter, setShowFilter] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [xirr, setXirr] = useState<number | null>(null);
 
   // Alert modal state
   const [alertModalOpen, setAlertModalOpen] = useState(false);
@@ -309,12 +307,9 @@ export default function Dashboard() {
 
       if (!isFresh(storeMargins.fetchedAt, TTL_MS.margins)) {
         promises.push(
-          Promise.all([getMargins(), getPortfolioSummary()]).then(
-            ([marginsRes, summaryRes]) => {
-              setStoreMargins(mapMargins(marginsRes));
-              setXirr(summaryRes.xirr);
-            }
-          )
+          getMargins().then((marginsRes) => {
+            setStoreMargins(mapMargins(marginsRes));
+          })
         );
       }
 
@@ -512,8 +507,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* PD-04: Summary cards — 6 metrics */}
-      <div className="grid grid-cols-6 gap-3 px-4 py-3 border-b border-[#2a2a2a]">
+      {/* PD-04: Summary cards — 5 metrics */}
+      <div className="grid grid-cols-5 gap-3 px-4 py-3 border-b border-[#2a2a2a]">
         <SummaryCard label="Invested" value={`₹${totals.invested.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`} />
         <SummaryCard label="Current Value" value={`₹${totals.current.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`} />
         <SummaryCard
@@ -525,13 +520,6 @@ export default function Dashboard() {
           label="Returns"
           value={`${totals.pnlPct >= 0 ? "+" : ""}${totals.pnlPct.toFixed(2)}%`}
           valueClass={totals.pnlPct >= 0 ? "text-green-400" : "text-red-400"}
-        />
-        {/* PD-04: XIRR */}
-        <SummaryCard
-          label="XIRR"
-          value={xirr != null ? `${xirr.toFixed(2)}%` : "N/A"}
-          valueClass={xirr != null && xirr >= 0 ? "text-green-400" : undefined}
-          hint="Annualised return on invested capital"
         />
         {/* PD-03: Available margin */}
         <SummaryCard

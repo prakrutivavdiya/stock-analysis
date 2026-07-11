@@ -142,7 +142,6 @@ export const handlers = [
       total_pnl_percent: 7.14,
       day_pnl: 200,
       day_pnl_percent: 0.13,
-      xirr: 12.5,
     })
   ),
 

@@ -235,8 +235,9 @@ async def test_fetch_nse_fundamental_returns_full_data() -> None:
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
-    # First call: homepage (value ignored); second call: quote data
-    mock_client.get = AsyncMock(side_effect=[MagicMock(), mock_resp])
+    # Calls: homepage warm-up, per-symbol quote-page warm-up (both ignored),
+    # then the actual quote API response.
+    mock_client.get = AsyncMock(side_effect=[MagicMock(), MagicMock(), mock_resp])
 
     with patch("backend.routers.fundamentals.httpx.AsyncClient", return_value=mock_client):
         result = await _fetch_nse_fundamental.__wrapped__("INFY")  # bypass tenacity

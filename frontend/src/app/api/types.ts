@@ -105,7 +105,6 @@ export interface PortfolioSummary {
   holdings_count: number;
   profitable_count: number;
   loss_count: number;
-  xirr: number | null;
 }
 
 // ---------------------------------------------------------------------------
