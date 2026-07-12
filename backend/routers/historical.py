@@ -93,6 +93,18 @@ async def _fetch_from_yfinance(
             status_code=404, detail=f"No historical data found for {yf_symbol}"
         )
 
+    # Skip candles already cached (see _fetch_and_cache) so a boundary duplicate
+    # can't drop the whole batch. Widen by a day each side to catch tz-shifted
+    # boundary candles (membership compares by instant).
+    existing_ts = set((await db.execute(
+        select(OHLCVCache.candle_timestamp).where(
+            OHLCVCache.instrument_token == instrument_token,
+            OHLCVCache.interval == interval,
+            OHLCVCache.candle_timestamp >= from_dt - timedelta(days=1),
+            OHLCVCache.candle_timestamp <= to_dt + timedelta(days=1),
+        )
+    )).scalars().all())
+
     candles: list[Candle] = []
     try:
         # Savepoint: a duplicate-row IntegrityError rolls back only these inserts,
@@ -103,20 +115,23 @@ async def _fetch_from_yfinance(
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
 
-                db.add(OHLCVCache(
-                    instrument_token=instrument_token,
-                    tradingsymbol=tradingsymbol,
-                    exchange=exchange,
-                    interval=interval,
-                    candle_timestamp=dt,
+                candles.append(Candle(
+                    timestamp=dt,
                     open=float(row["Open"]),
                     high=float(row["High"]),
                     low=float(row["Low"]),
                     close=float(row["Close"]),
                     volume=int(row.get("Volume", 0)),
                 ))
-                candles.append(Candle(
-                    timestamp=dt,
+                if dt in existing_ts:
+                    continue  # already cached — don't re-insert
+
+                db.add(OHLCVCache(
+                    instrument_token=instrument_token,
+                    tradingsymbol=tradingsymbol,
+                    exchange=exchange,
+                    interval=interval,
+                    candle_timestamp=dt,
                     open=float(row["Open"]),
                     high=float(row["High"]),
                     low=float(row["Low"]),
@@ -165,11 +180,34 @@ async def _fetch_and_cache(
             )
         raise HTTPException(status_code=502, detail=f"Kite historical API error: {exc}") from exc
 
+    # Skip candles already cached so a single duplicate can't roll back the
+    # whole batch. Kite returns IST-midnight timestamps that are the same
+    # instant as a UTC-stored boundary candle (00:00 IST == 18:30 UTC prev day),
+    # so the first candle of a forward-gap window is usually already present.
+    # Widen the lookup by a day each side so a tz-shifted boundary is caught
+    # (membership below compares by instant, so the extra rows are harmless).
+    existing_ts = set((await db.execute(
+        select(OHLCVCache.candle_timestamp).where(
+            OHLCVCache.instrument_token == instrument_token,
+            OHLCVCache.interval == interval,
+            OHLCVCache.candle_timestamp >= from_dt - timedelta(days=1),
+            OHLCVCache.candle_timestamp <= to_dt + timedelta(days=1),
+        )
+    )).scalars().all())
+
     candles: list[Candle] = []
     for c in raw:
         ts = c["date"]
         if isinstance(ts, datetime) and ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
+
+        candles.append(Candle(
+            timestamp=ts,
+            open=c["open"], high=c["high"], low=c["low"],
+            close=c["close"], volume=c["volume"],
+        ))
+        if ts in existing_ts:
+            continue  # already cached — don't re-insert
 
         db.add(OHLCVCache(
             instrument_token=instrument_token,
@@ -180,16 +218,11 @@ async def _fetch_and_cache(
             open=c["open"], high=c["high"], low=c["low"],
             close=c["close"], volume=c["volume"],
         ))
-        candles.append(Candle(
-            timestamp=ts,
-            open=c["open"], high=c["high"], low=c["low"],
-            close=c["close"], volume=c["volume"],
-        ))
 
     try:
         await db.commit()
     except IntegrityError:
-        # Another request/scheduler already cached these candles; safe to ignore
+        # Concurrent writer cached the same candles; safe to ignore.
         await db.rollback()
     return candles
 
@@ -281,9 +314,28 @@ async def get_historical(
             for r in cached
         ]
 
-        # For daily data: if cache doesn't reach to_d, fetch the missing gap from Kite
-        # (e.g. cache stops at Friday, user views on Monday — fetch Mon's candle)
+        # For daily data, fill gaps between the cache and the requested range so
+        # the series is contiguous (indicators are computed over the same range).
         if not is_intraday:
+            # Backward gap: cache starts later than from_date (older history missing).
+            # Fetch only the non-overlapping older window to avoid duplicate-key rollbacks.
+            earliest_cached_date = cached[0].candle_timestamp.date()
+            if earliest_cached_date > from_d + timedelta(days=7):
+                gap_to_dt = datetime(
+                    earliest_cached_date.year, earliest_cached_date.month, earliest_cached_date.day,
+                    tzinfo=timezone.utc,
+                ) - timedelta(seconds=1)
+                try:
+                    older = await _fetch_and_cache(
+                        db, kite, instrument_token, symbol, exch, interval, from_dt, gap_to_dt
+                    )
+                    if older:
+                        candles = older + candles  # older precedes all cached candles
+                        source = "kite"
+                except Exception:
+                    pass  # best-effort — serve what we have
+
+            # Forward gap: cache stops before to_d (e.g. Fri cache, Mon view — fetch Mon).
             latest_cached_date = cached[-1].candle_timestamp.date()
             if latest_cached_date < to_d:
                 gap_from_dt = datetime(

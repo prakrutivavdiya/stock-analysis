@@ -273,6 +273,26 @@ async def compute_indicators(
                 raise HTTPException(status_code=502, detail=f"Kite API error: {exc}") from exc
             log.warning("Indicator OHLCV backfill failed for %s: %s", sym, exc)
 
+    # Forward gap: cache stops before to_date (the latest few candles missing).
+    # /historical forward-fills those for the price series, so without this the
+    # overlays/oscillators would trail the candles by a few days on first load
+    # (before /historical's fill is visible to this request). Fetch only the
+    # newer, non-overlapping window so indicators cover the same latest candles.
+    if rows:
+        latest = rows[-1].candle_timestamp.date()
+        if latest < to_d - timedelta(days=1):
+            gap_from = datetime(
+                latest.year, latest.month, latest.day, tzinfo=timezone.utc
+            ) + timedelta(days=1)
+            try:
+                await _fetch_and_cache(
+                    db, kite, instrument_token, sym, exchange, interval, gap_from, to_dt
+                )
+                rows = await _load_rows()
+            except Exception as exc:
+                # Best-effort — render over what we have if the fetch fails.
+                log.warning("Indicator OHLCV forward-fill failed for %s: %s", sym, exc)
+
     if not rows:
         return {}
 

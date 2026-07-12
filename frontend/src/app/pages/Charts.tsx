@@ -15,7 +15,8 @@ import {
 } from "lightweight-charts";
 import { ChevronDown, Check, Search, Minus, TrendingUp, Type, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
-import { useAppStore } from "../data/store";
+import { useAppStore, TTL_MS, isFresh } from "../data/store";
+import { getHoldings, mapHolding } from "../api/portfolio";
 import { searchInstruments } from "../api/instruments";
 import { apiFetch } from "../api/client";
 import type { InstrumentResult, DrawingOut } from "../api/types";
@@ -301,6 +302,17 @@ export default function Charts() {
   const storeHoldings   = holdingsData ?? [];
   const holdingSymbols  = storeHoldings.map((h) => ({ symbol: h.symbol, exchange: h.exchange }));
 
+  // A hard refresh lands directly on /charts without the Dashboard having
+  // populated the holdings store, so the sidebar shows "No holdings". Fetch
+  // them here if the store is empty/stale (getState avoids stale closures).
+  useEffect(() => {
+    const h = useAppStore.getState().holdings;
+    if (isFresh(h.fetchedAt, TTL_MS.holdings)) return;
+    getHoldings()
+      .then((res) => useAppStore.getState().setHoldings(res.holdings.map(mapHolding)))
+      .catch(() => { /* leave sidebar empty on failure */ });
+  }, []);
+
   // Live instrument search while user types
   useEffect(() => {
     if (!search) { setSearchResults(null); return; }
@@ -547,6 +559,19 @@ export default function Charts() {
           }
           token        = inst.instrument_token;
           ({ from, to } = getDateRange(backendInterval, interval));
+          // Widen to the oldest date we've previously viewed so the backend
+          // returns ONE contiguous series (it backfills missing history). This
+          // replaces stitching stale localStorage candles, which could leave a
+          // hole between the cached history and the fresh window.
+          if (!isIntraday) {
+            try {
+              const stored = localStorage.getItem(`candle_hist_${token}_${interval}`);
+              if (stored) {
+                const hist = JSON.parse(stored) as { from?: string };
+                if (hist.from && hist.from < from) from = hist.from;
+              }
+            } catch { /* ignore corrupt cache */ }
+          }
           const qs = new URLSearchParams({
             interval: backendInterval, from_date: from, to_date: to,
             tradingsymbol: inst.tradingsymbol, exchange: inst.exchange,
@@ -561,29 +586,6 @@ export default function Charts() {
           else if (interval === "W")   candles = aggregateToWeekly(candles);
           else if (interval === "M")   candles = aggregateToMonthly(candles);
           candleCacheRef.current = { symbol, exchange, interval, token, from, to, candles };
-
-          // Merge any persisted older candles from localStorage
-          if (!isIntraday) {
-            try {
-              const stored = localStorage.getItem(`candle_hist_${token}_${interval}`);
-              if (stored) {
-                const hist = JSON.parse(stored) as { from: string; candles: CandleData[] };
-                if (hist.from < from) {
-                  // Use date-string comparison (avoids IST/UTC boundary dup at exactly `from`)
-                  const older = hist.candles.filter(c => c.timestamp.slice(0, 10) < from);
-                  if (older.length > 0) {
-                    candles = dedupCandles(
-                      [...older, ...candles].sort(
-                        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-                      )
-                    );
-                    from = hist.from;
-                    candleCacheRef.current = { symbol, exchange, interval, token, from, to, candles };
-                  }
-                }
-              }
-            } catch { /* ignore corrupt cache */ }
-          }
         }
 
         if (cancelled || !containerRef.current) return;

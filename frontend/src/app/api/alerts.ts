@@ -10,7 +10,9 @@ import type {
   AlertUpdateRequest,
 } from "./types";
 
-const BASE = "/api/v1/alerts";
+// apiFetch already prepends "/api/v1" — keep this path relative to avoid a
+// doubled "/api/v1/api/v1/alerts" (which 404s).
+const BASE = "/alerts";
 
 export async function getAlerts(params?: {
   status?: string;
